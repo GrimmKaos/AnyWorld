@@ -76,6 +76,13 @@ class DicePlan(StrictModel):
     chance_rule_decisions: dict[str, ChanceRuleDecision] = Field(default_factory=dict)
 
 
+class ConditionalCheckAudit(StrictModel):
+    """Concrete occurrence differences for one conditional rule, before any dice rolls."""
+
+    missing_occurrences: list[str] = Field(max_length=16)
+    invalid_occurrences: list[str] = Field(max_length=16)
+
+
 class ContextSummary(StrictModel):
     """Structured memory retained after older round history is compacted."""
 

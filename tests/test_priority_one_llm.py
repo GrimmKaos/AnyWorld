@@ -9,6 +9,7 @@ import pytest
 
 from core.config import settings
 from core.schemas import ContextSummary, DicePlan, RoundResolution, ScenarioTitle, SummaryAudit
+from core.schemas import ConditionalCheckAudit
 from logic.llm_manager import LLMContextManager, LLMResolutionError
 
 
@@ -33,6 +34,8 @@ class FakeClient:
             result = result(kwargs)
         elif isinstance(result, DicePlan) and kwargs["response_format"] is SummaryAudit:
             result = SummaryAudit(preserved=True, corrections=[])
+        elif isinstance(result, DicePlan) and kwargs["response_format"] is ConditionalCheckAudit:
+            result = ConditionalCheckAudit(missing_occurrences=[], invalid_occurrences=[])
         if isinstance(result, Exception):
             raise result
         if result is None:
@@ -47,6 +50,8 @@ class FakeClient:
                 result = ScenarioTitle(title="The gate")
             elif schema is SummaryAudit:
                 result = SummaryAudit(preserved=True, corrections=[])
+            elif schema is ConditionalCheckAudit:
+                result = ConditionalCheckAudit(missing_occurrences=[], invalid_occurrences=[])
             elif issubclass(schema, ContextSummary):
                 result = memory()
             else:
@@ -351,7 +356,7 @@ def test_planner_sees_private_guidance_durable_facts_and_recent_changes():
             {"role": "assistant", "content": "Mira has left."},
         ]
         plan = await manager.plan_dice({"Alice": "open gate"}, "A breeze rises.")
-        text = str(client.calls[-1]["messages"])
+        text = str(client.calls[0]["messages"])
         for fact in [
             "PRIVATE_TRIGGER",
             "brass key",
@@ -378,6 +383,7 @@ def test_public_output_leaking_secret_roll_or_guidance_is_rejected(leak):
     """Verify public output leaking a secret roll or guidance is rejected."""
 
     async def run():
+        settings.llm.context_window_size = 32_768
         client = FakeClient(
             RoundResolution(global_narrative=leak, player_resolutions={"Alice": "Alice waits."})
         )
