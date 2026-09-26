@@ -18,10 +18,6 @@ provided by this checkout and do not establish general performance guarantees.
 
 ## Active
 
-- [ ] **P2 - Tune OpenAI caching only for supported model/API capabilities** - core/config.py; logic/llm_manager.py.
-  - Keep reusable prefixes stable. Select routing/retention settings only when supported by the selected model and Chat Completions endpoint; measure cache reads/writes and total cost with human idle time. Do not pad prompts to seek cache eligibility or transfer llama.cpp flags to OpenAI.
-  - Acceptance: unsupported options are omitted and cold/expired caches remain correct. Cached input still consumes context. [OpenAI prompt caching guidance](https://developers.openai.com/api/docs/guides/prompt-caching).
-
 - [ ] **P2 - Use a compact fact ledger plus recent rounds for narrative memory** - core/schemas.py; logic/engine.py; logic/llm_manager.py.
   - Maintain authoritative players, world, NPCs, resources and unresolved threads, applying validated changes from the existing resolution where feasible. Keep rich prose in transcripts/UI instead of retransmitting it indefinitely.
   - Separate immutable premise from changing facts; replace superseded facts and retrieve archived details when relevant. Freeze checkpoints between compactions when practical to preserve prefix reuse. Avoid adding mandatory summarization every round.
@@ -48,9 +44,14 @@ provided by this checkout and do not establish general performance guarantees.
 
 ## Waiting On
 
-- [ ] **Measure representative session length and player idle time** - Backend profile received and live runs completed on 2026-09-15: llama.cpp b10964/b29c606e2, Gemma 4 26B A4B Q4_K_XXL, canonical template, one 128000-token slot and q8_0 KV. Benchmarks use a stated 20-second artificial idle interval; typical human delay/session length remain unmeasured. OpenAI is secondary and untested live.
+- [ ] **Measure representative session length and player idle time** - Backend profile received and live runs completed on 2026-09-15: llama.cpp b10964/b29c606e2, Gemma 4 26B A4B Q4_K_XXL, canonical template, one 128000-token slot and q8_0 KV. A synthetic OpenAI run on 2026-09-27 completed 16 rounds without added inter-round waits; it stopped at round 17 after three dice-planning failures and repeated compaction rollbacks. Typical human delay/session length and idle-time effects remain unmeasured.
 
 ## Someday
+
+- [ ] **P3 - Revisit OpenAI cache controls if deployed usage justifies tuning** - core/config.py; logic/llm_manager.py.
+  - Keep reusable prefixes stable. Use routing/retention options only when supported by the selected model and Chat Completions endpoint; never pad prompts or transfer llama.cpp flags to OpenAI. Cached input still consumes context. [OpenAI prompt caching guidance](https://developers.openai.com/api/docs/guides/prompt-caching).
+  - Measurement (2026-09-27): synthetic two-player run on GPT-5.6 Luna using default caching completed 16 rounds with no added idle waits. Across setup and the failed 17th round: 250,560 input tokens, 117,808 cached reads (47%), 131,154 cache-write tokens and 7,900 output tokens; estimated cost $0.0449 versus $0.0596 without cache reads/writes (about 25% lower). Resolution-call cache reads rose to about 95% by round 16; dice-planning calls had no cache hits. Round 17 stopped after three dice-planning failures, with context compaction rolling back each time.
+  - Priority conclusion: demoted from P2 to P3. Default caching already yields substantial reuse and estimated savings, so no immediate cache-control change is justified. Revisit if real player idle intervals, cold/expired-cache behavior, or production cost data show a gap. The round-17 compaction failure is a separate memory/reliability concern, not evidence that cache controls need tuning.
 
 - [ ] **P3 - Support multiple sessions and host reset** - Isolate engines, resolvers, credentials, transcripts and cancellation before adding workers/reset. Retains earlier repository backlog intent.
 - [ ] **P3 - Evaluate multilingual play** - Retains earlier translation backlog intent; assess coherence and token budgets rather than assuming a model class is required.
@@ -58,6 +59,35 @@ provided by this checkout and do not establish general performance guarantees.
 - [ ] **P3 - Version static assets reproducibly** - Replace manual ?v= values with content/build hashes and suitable cache headers so unchanged assets stay cached and edits invalidate reliably.
 
 ## Done
+
+- [x] ~~Normalize unsupported hidden-roll labels to public checks~~ (2026-09-27)
+  - Missing, percentage-based, or unrelated private sources no longer fail dice planning. The
+    action's planned d100 remains and is treated as public; valid cited secret sources stay hidden.
+
+- [x] ~~Retry failed rounds automatically before pausing~~ (2026-09-27)
+  - Up to two round-level retries reuse pending actions and dice, keeping the thinking indicator
+    active without intermediate error messages. The existing overall deadline, cancellation and
+    stale-generation guards remain effective. Exhaustion preserves manual Retry/End recovery.
+
+- [x] ~~Narrow conditional audits and clarify unspecified chance triggers~~ (2026-09-26)
+  - Conditional audits return structured occurrence differences instead of unrestricted critiques
+    of public rolls or missing random results. Model-classified per-round rules bypass this audit.
+    The planner defaults unspecified triggers to per-round and preserves action rolls during
+    privacy repairs. Trigger interpretation still depends on model accuracy without explicit cadence.
+
+- [x] ~~Prevent planning audits from demanding unrolled chance results~~ (2026-09-26)
+  - Per-round-only public plans bypass the planning audit. Remaining audits check conditional
+    occurrences and hidden-check classification before rolls, excluding per-round event data.
+    Source choices are constrained to non-percentage guidance lines; repairs retain the rejected
+    plan as context. Offline validation: 212 Python tests passed; live behavior remains unverified.
+
+- [x] ~~Separate the single percentage event from freeform DM guidance~~ (2026-09-26)
+  - Scenario setup now has an optional single-line `chance_event` field accepting exactly one
+    whole-number percentage rule per game. Percentage rules in freeform guidance are rejected;
+    the remaining guidance is non-probabilistic steering. README.md, INSTALL.md, AGENTS.md and
+    the host-form documentation describe the same contract. Per-round checks are generated by
+    Python, conditional triggers remain model-classified, and setting-conflicting attempts can
+    receive public low-plausibility checks instead of being rejected as impossible.
 
 - [x] ~~Separate title preparation from the generated opening~~ (2026-09-17)
   - Scenario submission generates only a title. Joining players see the host-typed prompt; Start Game generates the opening with all joined names. The prompt requests setting, goal, roles, paragraphs, and consistent physical consequences. These instructions do not guarantee model coherence.
