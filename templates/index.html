@@ -66,20 +66,26 @@
         <form id="scenario-form">
           <label for="scenario-input">Describe the setting, characters, and opening situation</label>
           <textarea id="scenario-input" maxlength="20000" required></textarea>
-          <label for="guidance-input">Additional DM guidance (optional)</label>
+          <label for="chance-event-input">One percentage-based event (optional)</label>
+          <input id="chance-event-input" type="text" maxlength="1000" aria-describedby="chance-event-tips"
+            placeholder="Example: Add a 40% chance per round that a helpful stranger appears">
+          <div id="chance-event-tips">
+            Use one whole-number percentage from 0–100% and specify a trigger, such as
+            "when a player enters a building", or write "per round".
+            If no trigger is specified, the event is checked once per round, not once per player.
+          </div>
+          <label for="guidance-input">Additional freeform DM guidance (optional)</label>
           <textarea id="guidance-input" maxlength="5000" aria-describedby="guidance-tips"
-            placeholder="Example: 'Add a 2% chance every round that a stranger appears' or 'The tone is gothic horror.'"></textarea>
+            placeholder="Example: 'Keep the world coherent while steering toward eerie discoveries.'"></textarea>
           <div id="guidance-tips">
-            Each line can be either a random event or narrative guidance:
+            Use this field only for secret steering instructions:
             <ul>
-              <li><strong>Random Events:</strong> Define a chance (0–100%) and a trigger. <em>Example: "Add a 10% chance
-                  every round that a thief appears."</em></li>
-              <li><strong>Narrative Guidance:</strong> Instructions to steer the AI's style, tone, or direction.
-                <em>Example: "The setting is gothic.", or "Steer responses toward the absurd, as if the scenario
-                  happened in a universe that does not conform to basic logic."</em></li>
+              <li><strong>Story Guidance:</strong> Non-probabilistic instructions to steer the world or direction.
+                <em>Example: "Steer responses toward the absurd, as if the scenario happened in a universe that
+                  does not conform to basic logic."</em></li>
             </ul>
-            Each instruction is processed on its own line. Python rolls the chance for events; the AI follows the
-            narrative guidance to shape the story.
+            Only the dedicated field above may contain a percentage-based event. Python rolls that one event;
+            the AI follows this guidance to shape the story.
           </div>
           <button type="submit">Generate scenario</button>
         </form>
@@ -104,7 +110,7 @@
   <button id="end-game-button" type="button" hidden>End game</button>
   <button id="retry-round-button" type="button" hidden>Retry paused round</button>
   <div id="connection-status" role="status">Connecting...</div>
-  <script src="/static/js/app.js?v=context-13"></script>
+  <script src="/static/js/app.js?v=context-15"></script>
 </body>
 
 </html>

@@ -72,9 +72,10 @@ function browser(localStorage = storage(), sessionStorage = storage()) {
             node("password-input").value = password;
             await node("login-form").listeners.submit({ preventDefault() {} });
         },
-        accept(socket = sockets.at(-1), name = "Arxs", token = "private-token") {
+        accept(socket = sockets.at(-1), name = "Arxs", token = "private-token",
+            isHost = false, state = "ACTIVE_TURN") {
             socket.receive("auth_ok", {
-                name, reconnect_token: token, is_host: false, state: "ACTIVE_TURN",
+                name, reconnect_token: token, is_host: isHost, state,
                 players: [], player_order: [],
             });
         },
@@ -232,4 +233,23 @@ test("opening uses generated text and snapshots keep it separate from later roun
     assert.deepEqual(shown, [
         ["original", "Raw host prompt"], ["opening", "Generated opening"], ["state", "Later state", 2],
     ]);
+});
+
+test("scenario validation errors remain visible in the host form", async () => {
+    const tab = browser();
+    const socket = tab.sockets[0];
+    socket.open();
+    await tab.login("Host");
+    tab.accept(socket, "Host", "private-token", true, "SCENARIO_INJECTION");
+    assert.equal(tab.node("host-modal").hidden, false);
+    assert.equal(tab.node("scenario-step").hidden, false);
+
+    tab.node("scenario-form").listeners.submit({ preventDefault() {} });
+    socket.receive("dm_thinking", { active: true });
+    assert.equal(tab.node("host-modal").hidden, false);
+    socket.receive("error", { msg: "Freeform DM guidance cannot contain percentage events." });
+
+    assert.equal(tab.node("host-status").textContent,
+        "Freeform DM guidance cannot contain percentage events.");
+    assert.equal(tab.node("scenario-form").querySelector().disabled, false);
 });

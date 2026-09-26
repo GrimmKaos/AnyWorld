@@ -193,6 +193,73 @@ def test_scenario_title_is_generated_before_game_start(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
+def test_scenario_uses_one_separate_chance_event_and_freeform_guidance(
+    tmp_path: Path,
+) -> None:
+    async def run() -> None:
+        sender = FakeSender()
+        resolver = FakeResolver()
+        engine = GameEngine(sender, resolver)
+        engine.transcript = GameTranscript(tmp_path / "logs")
+
+        await engine.process_payload(
+            "host",
+            payload(
+                "auth",
+                name="Host",
+                password_digest=password_digest(settings.server.host_password, "host"),
+            ),
+        )
+        await engine.process_payload(
+            "host",
+            payload(
+                "scenario_init",
+                scenario="A gate blocks the road.",
+                guidance="Keep the tone eerie.",
+                chance_event="Add a 40% chance every round that a bell rings.",
+            ),
+        )
+        await engine.wait_for_inference()
+
+        assert engine.private_guidance == (
+            "Keep the tone eerie.\nAdd a 40% chance every round that a bell rings."
+        )
+        assert sender.events_of_type("scenario_ready")
+
+        await engine.shutdown()
+
+    asyncio.run(run())
+
+
+def test_scenario_rejects_percentage_events_in_freeform_guidance(tmp_path: Path) -> None:
+    async def run() -> None:
+        sender = FakeSender()
+        engine = GameEngine(sender, FakeResolver())
+        engine.transcript = GameTranscript(tmp_path / "logs")
+        await engine.process_payload(
+            "host",
+            payload(
+                "auth",
+                name="Host",
+                password_digest=password_digest(settings.server.host_password, "host"),
+            ),
+        )
+        await engine.process_payload(
+            "host",
+            payload(
+                "scenario_init",
+                scenario="A gate blocks the road.",
+                guidance="Add a 20% chance every round that a bell rings.\n"
+                "Add a 30% chance every round that a raven appears.",
+            ),
+        )
+
+        assert engine.state is GameState.SCENARIO_INJECTION
+        assert "dedicated chance event field" in sender.events_of_type("error")[-1].payload["msg"]
+
+    asyncio.run(run())
+
+
 def test_active_disconnect_injects_idle_and_advances(tmp_path: Path) -> None:
     """Verify an active disconnect injects idle and advances the turn."""
 

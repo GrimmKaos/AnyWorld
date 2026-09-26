@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from core.config import settings
 from core.schemas import ClientPayload, ServerEvent
+from logic.dice import combine_private_guidance
 from logic.models import GameState, Player
 from logic.validation import clean_optional_text, clean_text
 
@@ -166,6 +167,8 @@ class LobbyMixin:
         """Accept the host's scenario and launch its preparation job."""
         scenario = clean_text(data.get("scenario"), "scenario", 20_000)
         guidance = clean_optional_text(data.get("guidance"), "guidance", 5_000)
+        chance_event = clean_optional_text(data.get("chance_event"), "chance_event", 1_000)
+        guidance = combine_private_guidance(guidance, chance_event)
         async with self.lock:
             if not CURRENT_OWNER.get()():
                 return

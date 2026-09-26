@@ -272,6 +272,11 @@ button:disabled {
     min-height: 6rem;
     resize: vertical;
 }
+#chance-event-tips,
+#guidance-tips {
+    font-size: 0.9rem;
+    color: var(--muted);
+}
 .action-entry,
 .resolution-entry,
 .chat-entry {

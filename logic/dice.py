@@ -16,6 +16,30 @@ def private_chance_rules(guidance: str) -> dict[str, tuple[str, int]]:
     return rules
 
 
+def combine_private_guidance(guidance: str, chance_event: str = "") -> str:
+    """Validate the single optional chance field and combine it with freeform guidance."""
+    if re.search(r"%|\bpercent(?:age)?\b|\bper\s+cent\b", guidance, re.IGNORECASE):
+        raise ValueError(
+            "Freeform DM guidance cannot contain percentage events. Put one optional "
+            "percentage-based event in the dedicated chance event field."
+        )
+    if not chance_event:
+        return guidance
+    if "\n" in chance_event or "\r" in chance_event:
+        raise ValueError("'chance_event' must be a single line")
+    matches = re.findall(r"([+-]?\d+(?:[.,]\d+)?)\s*(?:%|percent\b)", chance_event, re.IGNORECASE)
+    if (
+        len(matches) != 1
+        or not matches[0].isdigit()
+        or not 0 <= int(matches[0]) <= 100
+        or len(private_chance_rules(chance_event)) != 1
+    ):
+        raise ValueError(
+            "'chance_event' must contain exactly one whole-number percentage from 0 to 100."
+        )
+    return "\n".join(part for part in (guidance, chance_event) if part)
+
+
 def _is_per_round_rule(instruction: str) -> bool:
     """Return whether a rule explicitly requests one check on every turn/round."""
     return bool(
@@ -24,6 +48,27 @@ def _is_per_round_rule(instruction: str) -> bool:
             instruction,
             re.IGNORECASE,
         )
+    )
+
+
+def _has_conditional_trigger(instruction: str) -> bool:
+    """Return whether a chance rule names a condition instead of defaulting to each round."""
+    return bool(
+        re.search(
+            r"\b(?:when(?:ever)?|if|after|before|once|upon|while|until|"
+            r"as\s+soon\s+as|each\s+time|every\s+time)\b",
+            instruction,
+            re.IGNORECASE,
+        )
+    )
+
+
+def conditional_chance_rule_ids(guidance: str) -> tuple[str, ...]:
+    """Return chance rules that explicitly name a condition; others default to each round."""
+    return tuple(
+        rule_id
+        for rule_id, (instruction, _) in private_chance_rules(guidance).items()
+        if not _is_per_round_rule(instruction) and _has_conditional_trigger(instruction)
     )
 
 
@@ -36,27 +81,32 @@ def has_non_percentage_private_guidance(guidance: str) -> bool:
 def normalize_chance_rule_decisions(
     decisions: dict[str, ChanceRuleDecision], guidance: str
 ) -> dict[str, ChanceRuleDecision]:
-    """Make explicit every-turn/round cadence authoritative after model parsing."""
+    """Enforce host-authored triggers; unspecified chance rules default to each round."""
     rules = private_chance_rules(guidance)
-    if set(decisions) != set(rules):
+    required = set(conditional_chance_rule_ids(guidance))
+    if not required.issubset(decisions) or not set(decisions).issubset(rules):
         raise ValueError(
-            "Chance plan must account for every private rule in chance_rule_decisions: "
-            + ", ".join(rules)
-            + ". Do not omit earlier rows or stop after selecting one rule."
+            "Chance plan must account for every private rule in chance_rule_decisions; "
+            "conditional rules required: "
+            + (", ".join(sorted(required)) or "none")
+            + ". Per-round rules are generated automatically."
         )
     normalized = {}
     for rule_id, (instruction, _) in rules.items():
-        decision = decisions[rule_id]
-        if _is_per_round_rule(instruction):
-            normalized[rule_id] = decision.model_copy(
-                update={
-                    "trigger": "per_round",
-                    "occurrences": ["round"],
-                    "reason": "The private rule explicitly applies once every round.",
-                }
+        decision = decisions.get(rule_id)
+        if _is_per_round_rule(instruction) or rule_id not in required:
+            normalized[rule_id] = ChanceRuleDecision(
+                trigger="per_round",
+                occurrences=["round"],
+                reason=(
+                    "The private rule explicitly applies once every round."
+                    if _is_per_round_rule(instruction)
+                    else "No conditional trigger was specified; use the per-round default."
+                ),
             )
         else:
-            normalized[rule_id] = decision
+            assert decision is not None
+            normalized[rule_id] = decision.model_copy(update={"trigger": "condition"})
     return normalized
 
 

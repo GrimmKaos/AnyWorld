@@ -19,7 +19,8 @@ from the repository directory, then open the local game page at https://127.0.0.
 ## How to play
 
 1. The host signs in first, using the host password, and writes a scenario. Include the setting
-   and the party's goal. Optional private DM guidance can provide secrets or special rules.
+   and the party's goal. The host may also add one optional percentage-based event and separate
+   freeform private DM guidance.
 2. The AI generates the scenario title. Players can then join using the player password. Everyone
    sees the banner and the host-typed scenario prompt..
 3. When everyone is ready, the host clicks **Start Game**. The AI writes the **Opening scenario**,
@@ -34,16 +35,20 @@ The player limit includes the host. Disconnected players receive idle actions ge
 so the game can continue. Story quality and consistency depend on the model;
 the game cannot guarantee that it follows every instruction perfectly.
 
-## Private percentage events
+## One private percentage event
 
-In **Additional DM guidance**, give each random event a whole-number percentage (0–100%)
-and say exactly when to check it. Write one rule per line, with one percentage per rule:
+Use the dedicated **One percentage-based event** field for one optional random event. It must be
+one single-line rule with exactly one whole-number percentage from 0–100% and a clear trigger:
 
-- "Add a 2% chance every round that a mysterious stranger appears to help the players."
+- "Add a 40% chance every round that a mysterious stranger appears to help the players."
 - "Add a 20% chance every time a building is entered, it collapses on the player."
 
-An every-round rule gets one check per round, not per player. A conditional
-rule gets a check for each distinct new occurrence identified by the AI in that round.
+Only one percentage-based event is accepted for the entire game. It may be turn-based or tied to
+a particular event as a trigger. An every-round rule gets one check per round, not per player. A
+conditional rule gets a check for each distinct new occurrence identified by the AI in that round.
+If no trigger or cadence is specified, the planner is instructed to use one check per round.
+Writing "per round" explicitly lets the server establish that cadence directly.
+The server creates every-round checks itself; the AI only identifies conditional occurrences.
 Remaining inside a building does not count as entering again. Specify whether players entering
 together should share one check (the default) or each get their own. Describe the event's
 effects and any limits, such as "only while no stranger is already helping the party".
@@ -56,16 +61,20 @@ not guarantee an event within 50 rounds. Checks begin with action rounds, not th
 Rules, rolls, and failed checks stay private; players see only observable story consequences.
 Server logs and private HTML transcripts record the checks.
 
-The AI identifies applicable rules and conditions and narrates the result, so those steps
-still depend on model accuracy. A conditional result is used only if its trigger actually
-happens; it cannot force a blocked action to succeed. Use a few short rules (at most 16 event
-checks per round); numerous or long rules may require a larger `dice_output_tokens` setting.
-Malformed or over-budget plans pause the round rather than falling back to invented rolls.
+The AI identifies whether a conditional trigger occurred and narrates the result, so those steps
+still depend on model accuracy. A conditional result is used only if its trigger actually happens;
+it cannot force a blocked action to succeed. A setting-conflicting attempt may still receive a
+public difficulty roll when its outcome is uncertain, with the low plausibility reflected in the
+result. Failed LLM rounds receive up to two automatic retries, retaining any dice already rolled.
+If recovery fails or the overall deadline expires, the host can retry the paused round or end.
+The dedicated field is optional; leave it blank when no percentage event is wanted.
 
-_In addition to the one-per-line chance events, you can write freeform steering instructions to the
-AI, such as "Keep the plot going, introduce new twists and NPCs when it's starting to seem the plot
-is not progressing", or "Keep the action resolutions surreal, as if the events were happening in a
-paraller universe that does not conform to our understanding of what is logical"._
+## Freeform private guidance
+
+Use **Additional freeform DM guidance** for non-probabilistic secret steering about the world,
+story direction, pacing, or other compatible presentation choices. The AI should apply compatible
+steering consistently without quoting the guidance. Do not put percentage-based rules in this
+field; the server rejects them so the game can never accept more than one percentage event.
 
 ## Rejoining a game
 

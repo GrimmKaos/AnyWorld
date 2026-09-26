@@ -31,10 +31,23 @@ automatically approved product changes. Proposed fixes belong in TASKS.md.
   `logic/lobby.py` owns authentication, scenario setup, start/end, chat and reconnect snapshots.
   `logic/engine.py` owns the lock, turn deque, action buffer and round orchestration.
 - `logic/validation.py` validates text; `logic/presentation.py` normalizes player outcome names.
+- `logic/dice.py` validates the dedicated chance-event field and combines it with freeform private
+  guidance; percentage rolls remain server-authoritative and private. Per-round rules are
+  synthesized by Python, while the LLM identifies occurrences only for conditional rules.
+  Planning audits run only for conditional triggers or hidden action checks, before any rolls;
+  server-generated per-round checks are excluded. Hidden sources use schema-constrained guidance
+  lines. A hidden label without a valid non-percentage guidance source is normalized to public
+  while preserving the planned action roll, avoiding a retry loop over privacy classification.
 - Host authentication precedes scenario setup. `generate_scenario_title()` returns only a title
   through ScenarioTitle; it does not remember narrative. Joining players see the host-typed prompt.
+  Scenario setup accepts one optional single-line whole-number percentage event in `chance_event`
+  (0–100%, either per-round or conditional) plus separate freeform `guidance`; percentage rules
+  in freeform guidance are rejected, so at most one percentage event exists per game. The two
+  fields are combined into the resolver's private context after validation.
   Start Game calls `generate_start_state()` with joined names and broadcasts the generated opening.
   Missing player names are rejected; role, goal, and prose coherence remain prompt instructions.
+  Setting-conflicting attempts may receive a public difficulty roll when their outcome is
+  uncertain; they are not rejected solely because the requested target seems impossible.
   No generation occurs just because a player joins.
 - Client envelope: event_type plus object data. Events: auth, chat, action, scenario_init,
   start_game, end_game, retry_round. Auth sends name and SHA-256 password_digest of password +
@@ -58,7 +71,8 @@ automatically approved product changes. Proposed fixes belong in TASKS.md.
   checks are included. Token usage is broadcast to all after rounds.
   Writes/finalization are serialized; cancellation waits for outstanding file writes.
 - Inference runs as an owned task outside socket receive loops. Generation IDs prevent stale
-  commits. Failed rounds pause with actions/dice intact; the host can retry or end. Reconnection
+  commits. LLM round failures receive up to two automatic retries within the existing job deadline,
+  reusing pending actions/dice. Exhausted failures pause; the host can retry or end. Reconnection
   resumes empty active turns; versioned presence transitions survive older round completions.
 
 ## Context and cache guidance
@@ -117,7 +131,8 @@ can include secrets and are not automatically rotated. See INSTALL.md for launch
 Current desktop columns are 20% chat / 80% game, with 3% title / 92% combined log / 5% input rows.
 Mobile <=700px stacks title/log/chat/input. The log is capped at 500 DOM entries (chat at 300),
 and snapshots do not replay full history. Host-typed scenario prompt precedes the generated
-Opening scenario. Snapshots retain the opening separately from the latest round state.
+Opening scenario. The host form has separate optional fields for one percentage event and freeform
+DM guidance. Snapshots retain the opening separately from the latest round state.
 
 For normal implementation work: `black --check app.py api core logic tests`,
 `flake8 app.py api core logic tests`, and `pytest`. Use fake resolvers and temporary transcripts.

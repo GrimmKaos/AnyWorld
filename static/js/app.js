@@ -93,6 +93,7 @@ const elements = {
     scenarioStep: document.getElementById("scenario-step"),
     scenarioForm: document.getElementById("scenario-form"),
     scenario: document.getElementById("scenario-input"),
+    chanceEvent: document.getElementById("chance-event-input"),
     guidance: document.getElementById("guidance-input"),
     lobbyStep: document.getElementById("lobby-step"),
     startButton: document.getElementById("start-button"),
@@ -119,6 +120,7 @@ const elements = {
 
 let authenticated = false;
 let isHost = false;
+let scenarioSubmitting = false;
 let lastStartedRound = 0;
 const renderedActions = new Set();
 const playerColors = new Map();
@@ -299,6 +301,14 @@ function showError(message) {
     }
 }
 
+function showScenarioError(message) {
+    elements.hostModal.hidden = false;
+    elements.scenarioStep.hidden = false;
+    elements.lobbyStep.hidden = true;
+    elements.hostStatus.textContent = message;
+    elements.hostStatus.classList.add("error");
+}
+
 function showHostStep(state) {
     if (!isHost || ["ACTIVE_TURN", "AWAITING_LLM", "ENDED"].includes(state)) {
         elements.hostModal.hidden = true;
@@ -415,7 +425,9 @@ function handleMessage(message) {
         if (payload.active) {
             elements.retryRoundButton.hidden = true;
             elements.endGameButton.hidden = !isHost;
-            elements.hostModal.hidden = true;
+            if (!scenarioSubmitting) {
+                elements.hostModal.hidden = true;
+            }
         }
     } else if (type === "chat_echo") {
         appendText(
@@ -470,16 +482,24 @@ function handleMessage(message) {
         elements.retryRoundButton.hidden = true;
         appendText(elements.chatMessages, `System: ${payload.msg}`, "chat-entry", MAX_CHAT_ENTRIES);
     } else if (type === "scenario_ready") {
+        scenarioSubmitting = false;
         appendScenario(payload.original_scenario, true);
         elements.hostModal.hidden = false;
         elements.endGameButton.hidden = true;
         elements.title.textContent = payload.title;
+        elements.hostStatus.classList.remove("error");
         elements.hostStatus.textContent = `“${payload.title}” is ready.`;
         elements.scenarioStep.hidden = true;
         elements.lobbyStep.hidden = false;
         elements.scenarioForm.querySelector("button").disabled = false;
     } else if (type === "error") {
-        showError(payload.msg || "Unknown server error.");
+        const message = payload.msg || "Unknown server error.";
+        if (scenarioSubmitting) {
+            scenarioSubmitting = false;
+            showScenarioError(message);
+        } else {
+            showError(message);
+        }
         elements.scenarioForm.querySelector("button").disabled = false;
         elements.startButton.disabled = false;
         if (payload.state) {
@@ -645,10 +665,13 @@ elements.scenarioForm.addEventListener("submit", (event) => {
     if (
         send("scenario_init", {
             scenario: elements.scenario.value.trim(),
+            chance_event: elements.chanceEvent.value.trim(),
             guidance: elements.guidance.value.trim(),
         })
     ) {
+        scenarioSubmitting = true;
         elements.scenarioForm.querySelector("button").disabled = true;
+        elements.hostStatus.classList.remove("error");
         elements.hostStatus.textContent = "Generating the scenario...";
     }
 });

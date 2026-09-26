@@ -11,6 +11,7 @@ from core.schemas import (
     ChanceEvent,
     ChanceEventResult,
     ChanceRuleDecision,
+    ConditionalCheckAudit,
     DicePlan,
     RoundResolution,
     SummaryAudit,
@@ -56,6 +57,39 @@ def test_exact_probability_over_all_possible_draws(monkeypatch, percentage):
 def test_invalid_probability_rejected(percentage):
     with pytest.raises(ValidationError):
         event(chance_percent=percentage)
+
+
+@pytest.mark.parametrize(
+    "guidance,chance_event,match",
+    [
+        ("Keep the tone eerie.", "Add a 40% chance every round that a bell rings.", None),
+        ("Add a 20% chance every round that a bell rings.", "", "Freeform"),
+        ("Add a forty percent chance that a bell rings.", "", "Freeform"),
+        ("There is a 40 per cent chance a bell rings.", "", "Freeform"),
+        ("Use the phrase percentage chance in the narration.", "", "Freeform"),
+        (
+            "Keep the tone eerie.",
+            "Add a 20% chance and a 30% chance that a bell rings.",
+            "exactly one",
+        ),
+        (
+            "Keep the tone eerie.",
+            "Add a 20.5% chance that a bell rings.",
+            "whole-number",
+        ),
+        ("Keep the tone eerie.", "Add a 20% chance\nthat a bell rings.", "single line"),
+    ],
+)
+def test_scenario_guidance_accepts_at_most_one_dedicated_chance_event(
+    guidance, chance_event, match
+):
+    if match:
+        with pytest.raises(ValueError, match=match):
+            dice.combine_private_guidance(guidance, chance_event)
+    else:
+        assert dice.combine_private_guidance(guidance, chance_event) == (
+            guidance + "\n" + chance_event
+        )
 
 
 @pytest.mark.parametrize(
@@ -135,7 +169,7 @@ def test_planner_catalog_resolves_rule_reference_before_returning():
                 hidden_rolls=[],
                 chance_rule_decisions={
                     "rule-1": ChanceRuleDecision(
-                        trigger="condition", occurrences=[event().occurrence], reason="Host enters."
+                        trigger="per_round", occurrences=[event().occurrence], reason="Host enters."
                     )
                 },
             )
@@ -148,6 +182,7 @@ def test_planner_catalog_resolves_rule_reference_before_returning():
         assert '"source_rule": "rule-1"' in prompt
         assert RULE in prompt
         assert len(client.calls) == 2
+        assert client.calls[1]["response_format"] is ConditionalCheckAudit
         await manager.close()
 
     asyncio.run(run())
@@ -247,8 +282,8 @@ def test_planner_repairs_omitted_rule_and_preserves_multiple_occurrences():
         calls = []
 
         def response(kwargs):
-            if kwargs["response_format"] is SummaryAudit:
-                return SummaryAudit(preserved=True, corrections=[])
+            if kwargs["response_format"] is ConditionalCheckAudit:
+                return ConditionalCheckAudit(missing_occurrences=[], invalid_occurrences=[])
             calls.append(kwargs)
             ids = ["rule-2"] if len(calls) == 1 else ["rule-1", "rule-2"]
             return DicePlan(
@@ -273,7 +308,7 @@ def test_planner_repairs_omitted_rule_and_preserves_multiple_occurrences():
         assert [item.source_rule for item in plan.chance_events] == [RULE, RULE, other]
         schema = calls[0]["response_format"].model_json_schema()
         coverage = schema["properties"]["chance_rule_decisions"]
-        assert coverage["required"] == ["rule-1", "rule-2"]
+        assert coverage["required"] == ["rule-1"]
         assert coverage["additionalProperties"] is False
         assert "every private rule" in calls[1]["messages"][-1]["content"]
         await manager.close()
@@ -342,6 +377,110 @@ def test_occurrences_are_the_single_source_of_chance_rolls():
     assert dice.chance_events_from_decisions(decisions, RULE) == []
 
 
+def test_per_round_chance_events_do_not_require_a_model_decision():
+    guidance = "Add a 40% chance every round that a Banana Split appears from nowhere."
+    assert dice.chance_events_from_decisions({}, guidance) == [
+        ChanceEvent(
+            source_rule=guidance,
+            trigger="per_round",
+            occurrence="round",
+            chance_percent=40,
+        )
+    ]
+
+
+def test_unspecified_trigger_per_round_decision_keeps_absurd_action_roll():
+    async def run():
+        rule = (
+            "Add a 40% chance one of the players suddenly gets handed a Banana Split from nowhere"
+        )
+        client = FakeClient(
+            DicePlan(
+                rolls={"Arxs": True},
+                hidden_rolls=[],
+                chance_rule_decisions={
+                    "rule-1": ChanceRuleDecision(
+                        trigger="per_round", occurrences=["round"], reason="No trigger specified."
+                    )
+                },
+            )
+        )
+        manager = LLMContextManager(client)
+        manager.set_genesis("A modern city.", rule)
+        plan = await manager.plan_dice({"Arxs": "Manifest a company of Ultramarines."})
+        assert plan.rolls == {"Arxs": True} and plan.hidden_rolls == []
+        assert len(plan.chance_events) == 1
+        assert plan.chance_events[0].trigger == "per_round"
+        assert len(client.calls) == 1
+        await manager.close()
+
+    asyncio.run(run())
+
+
+def test_conditional_chance_trigger_cannot_be_reclassified_as_per_round():
+    decision = ChanceRuleDecision(
+        trigger="per_round",
+        occurrences=[event().occurrence],
+        reason="The building was entered.",
+    )
+
+    normalized = dice.normalize_chance_rule_decisions({"rule-1": decision}, RULE)
+    events = dice.chance_events_from_decisions(normalized, RULE)
+
+    assert normalized["rule-1"].trigger == "condition"
+    assert events == [event()]
+
+
+def test_chance_rule_without_explicit_trigger_defaults_to_per_round():
+    rule = "Add a 40% chance one of the players suddenly gets handed a Banana Split from nowhere."
+    decisions = {
+        "rule-1": ChanceRuleDecision(
+            trigger="condition", occurrences=[], reason="No trigger occurred."
+        )
+    }
+
+    events = dice.chance_events_from_decisions(decisions, rule)
+
+    assert events == [
+        ChanceEvent(
+            source_rule=rule,
+            trigger="per_round",
+            occurrence="round",
+            chance_percent=40,
+        )
+    ]
+
+
+def test_per_round_plan_needs_no_audit_and_invalid_hidden_source_stays_public():
+    async def run():
+        guidance = "Introduce strange visitors when the story stalls."
+        chance = "Add a 40% chance per round that a Banana Split appears."
+        drafts = []
+
+        def response(kwargs):
+            assert kwargs["response_format"] is not SummaryAudit
+            drafts.append(kwargs)
+            return DicePlan(
+                rolls={"Arxs": True},
+                hidden_rolls=["Arxs"] if len(drafts) == 1 else [],
+                hidden_roll_sources={"Arxs": chance} if len(drafts) == 1 else {},
+            )
+
+        manager = LLMContextManager(FakeClient(response))
+        manager.set_genesis("A modern city with reality warps.", guidance + "\n" + chance)
+        plan = await manager.plan_dice({"Arxs": "Use a Vox-Caster to contact the Inquisition."})
+        assert plan.rolls == {"Arxs": True} and plan.hidden_rolls == []
+        assert len(plan.chance_events) == 1
+        assert plan.chance_events[0].chance_percent == 40
+        assert len(drafts) == 1
+        schema = drafts[0]["response_format"].model_json_schema()
+        sources = schema["properties"]["hidden_roll_sources"]["properties"]["Arxs"]["enum"]
+        assert sources == ["", guidance]
+        await manager.close()
+
+    asyncio.run(run())
+
+
 def test_explicit_per_turn_rules_are_authoritative_when_model_omits_occurrences():
     """A model cannot suppress unconditional percentage events by misclassifying them."""
     guidance = "\n".join(
@@ -372,6 +511,24 @@ def test_percentage_only_guidance_cannot_enable_hidden_action_rolls():
     assert dice.has_non_percentage_private_guidance(RULE + "\nThe gate has an invisible alarm.")
 
 
+def test_planner_keeps_freeform_steering_general_and_absurd_checks_public():
+    async def run():
+        client = FakeClient(DicePlan(rolls={"Host": True}, hidden_rolls=[]))
+        manager = LLMContextManager(client)
+        manager.set_genesis(
+            "A modern city.",
+            "Keep the world coherent while introducing surprising but compatible details.",
+        )
+        await manager.plan_dice({"Host": "Find the nearest base of the Human Imperium."})
+        prompt = client.calls[0]["messages"][-1]["content"]
+        assert "setting-conflicting attempt" in prompt
+        assert "freeform steering or a percentage event" in prompt
+        assert "style, tone, diction" not in prompt
+        await manager.close()
+
+    asyncio.run(run())
+
+
 def test_plan_audit_repairs_skipped_spell_triggers_alongside_every_round_event():
     """Audit runs even when a conditional rule incorrectly claims no occurrences."""
 
@@ -382,12 +539,12 @@ def test_plan_audit_repairs_skipped_spell_triggers_alongside_every_round_event()
         audits = []
 
         def response(kwargs):
-            if kwargs["response_format"] is SummaryAudit:
+            if kwargs["response_format"] is ConditionalCheckAudit:
                 audits.append(kwargs)
                 passed = len(audits) > 1
-                return SummaryAudit(
-                    preserved=passed,
-                    corrections=(
+                return ConditionalCheckAudit(
+                    invalid_occurrences=[],
+                    missing_occurrences=(
                         []
                         if passed
                         else ["Host conjuring fire and Player casting ice each trigger rule-2."]
@@ -459,7 +616,7 @@ def test_unrelated_private_guidance_cannot_hide_public_action_roll(tmp_path, mon
         await submit_round(engine)
         await engine.wait_for_inference()
         assert not engine.round_paused and engine.round_counter == 1
-        assert len(drafts) == 2
+        assert len(drafts) == 1
         assert sender.events_of_type("state_update")[-1].payload["dice_results"] == {"Host": 79}
         archive = engine.transcript.path.read_text(encoding="utf-8")
         assert "Host: 79/100 (resounding success)" in archive
@@ -470,19 +627,67 @@ def test_unrelated_private_guidance_cannot_hide_public_action_roll(tmp_path, mon
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("source", ["", RULE])
-def test_hidden_action_checks_need_non_percentage_private_sources(source):
-    manager = LLMContextManager(FakeClient())
-    manager.set_genesis("A gate", RULE)
-    with pytest.raises(LLMResolutionError, match="private"):
-        manager._check_hidden_roll_sources(
-            DicePlan(
-                rolls={"Host": True}, hidden_rolls=["Host"], hidden_roll_sources={"Host": source}
+def test_confused_hidden_audit_cannot_replan_public_rolls_or_per_round_events():
+    async def run():
+        guidance = 'Reply in caveman-style language only. Example: "Dwarf hit player."'
+        chance = "Add a 40% chance per round that a Banana Split appears."
+        audits = []
+
+        def response(kwargs):
+            if kwargs["response_format"] is SummaryAudit:
+                audits.append(kwargs)
+                return SummaryAudit(
+                    preserved=False,
+                    corrections=["Missing Banana Split check; make psychic powers hidden."],
+                )
+            return DicePlan(
+                rolls={"Arxs": True},
+                hidden_rolls=["Arxs"],
+                hidden_roll_sources={"Arxs": guidance},
             )
+
+        client = FakeClient(response)
+        manager = LLMContextManager(client)
+        manager.set_genesis("A modern city.", guidance + "\n" + chance)
+        plan = await manager.plan_dice({"Arxs": "Manifest a world using psychic powers."})
+        assert plan.rolls == {"Arxs": True}
+        assert plan.hidden_rolls == [] and plan.hidden_roll_sources == {}
+        assert len(plan.chance_events) == 1 and plan.chance_events[0].chance_percent == 40
+        assert len(client.calls) == 2 and len(audits) == 1
+        assert "Banana Split" not in str(audits[0]["messages"])
+        await manager.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("source", ["", RULE, "Invented hidden source that is not guidance."])
+def test_unsupported_hidden_sources_keep_action_roll_public(source):
+    manager = LLMContextManager(FakeClient())
+    guidance = "The locked gate conceals a private alarm."
+    manager.set_genesis("A gate", guidance + "\n" + RULE)
+    plan = manager._normalize_hidden_roll_sources(
+        DicePlan(rolls={"Host": True}, hidden_rolls=["Host"], hidden_roll_sources={"Host": source})
+    )
+    assert plan.rolls == {"Host": True}
+    assert plan.hidden_rolls == [] and plan.hidden_roll_sources == {}
+
+
+def test_valid_private_source_keeps_its_check_hidden():
+    manager = LLMContextManager(FakeClient())
+    guidance = "The locked gate conceals a private alarm."
+    manager.set_genesis("A gate", guidance)
+    plan = manager._normalize_hidden_roll_sources(
+        DicePlan(
+            rolls={"Host": True}, hidden_rolls=["Host"], hidden_roll_sources={"Host": guidance}
         )
+    )
+    assert plan.hidden_rolls == ["Host"]
 
 
-def test_multiple_rules_and_occurrences_roll_independently_and_survive_retry(tmp_path, monkeypatch):
+@pytest.mark.parametrize("failed_attempts", [1, 2])
+def test_multiple_rules_and_occurrences_roll_independently_and_survive_retry(
+    tmp_path, monkeypatch, failed_attempts
+):
     async def run():
         engine, sender, resolver = await setup(tmp_path)
         other = "Add a 20% chance every round that a stranger appears."
@@ -507,7 +712,7 @@ def test_multiple_rules_and_occurrences_roll_independently_and_survive_retry(tmp
 
         async def resolve(actions, dice_results=None, hidden_rolls=None, chance_events=None):
             received.append(chance_events)
-            if len(received) == 1:
+            if len(received) <= failed_attempts:
                 raise LLMResolutionError("Retry needed")
             return RoundResolution(
                 global_narrative="The tower collapses; a stranger approaches the intact barn.",
@@ -519,11 +724,12 @@ def test_multiple_rules_and_occurrences_roll_independently_and_survive_retry(tmp
         monkeypatch.setattr(resolver, "generate_resolution", resolve)
         await submit_round(engine)
         await engine.wait_for_inference()
-        assert engine.round_paused
-        await engine.process_payload("host", payload("retry_round"))
-        await engine.wait_for_inference()
+        assert not engine.round_paused
+        assert not sender.events_of_type("error")
         assert engine.round_counter == 1
         assert draws == [100, 100, 100]
+        assert len(received) == failed_attempts + 1
+        assert all(item == received[0] for item in received)
         assert received[0] == received[1]
         assert [result.roll for result in received[1]] == [1, 100, 20]
         assert [result.occurred for result in received[1]] == [True, False, True]
@@ -673,7 +879,7 @@ def test_round_retries_reuse_events_and_only_private_archives_expose_them(
 
         async def resolve(actions, dice_results=None, hidden_rolls=None, chance_events=None):
             received.append(chance_events)
-            if len(received) == 1:
+            if len(received) <= 3:
                 raise LLMResolutionError("Temporary failure")
             return RoundResolution(
                 global_narrative="The tower falls.",
@@ -701,7 +907,8 @@ def test_round_retries_reuse_events_and_only_private_archives_expose_them(
             for record in caplog.records
             if "Private chance events" in record.getMessage()
         ]
-        assert len(logs) == 2
+        assert len(logs) == 4
+        assert all(item == received[0] for item in received)
         assert "reused=False" in logs[0] and "reused=True" in logs[1]
         for line in logs:
             assert check.source_rule in line
