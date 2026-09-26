@@ -181,6 +181,43 @@ def test_failed_plan_pauses_without_unchecked_resolution_and_can_retry(tmp_path)
     asyncio.run(run())
 
 
+def test_retry_waits_for_failed_inference_cleanup(tmp_path):
+    """The host can retry after the pause event, even while task cleanup is finishing."""
+
+    async def run():
+        engine, sender, resolver = await setup(tmp_path)
+        cleanup_entered = asyncio.Event()
+        release_cleanup = asyncio.Event()
+
+        async def blocked_publish_usage():
+            cleanup_entered.set()
+            await release_cleanup.wait()
+
+        engine._publish_usage = blocked_publish_usage
+        resolver.fail_plan = True
+        await submit_round(engine)
+        await asyncio.wait_for(cleanup_entered.wait(), 1)
+        assert engine.round_paused
+
+        resolver.fail_plan = False
+        retry = asyncio.create_task(engine.process_payload("host", payload("retry_round")))
+        await asyncio.sleep(0)
+        assert not retry.done()
+
+        release_cleanup.set()
+        await asyncio.wait_for(retry, 1)
+        await engine.wait_for_inference()
+
+        assert engine.round_counter == 1 and not engine.round_paused
+        assert not any(
+            "previous request is still finishing" in event.payload.get("msg", "")
+            for event in sender.events_of_type("error")
+        )
+        await engine.shutdown()
+
+    asyncio.run(run())
+
+
 def test_failed_resolution_retries_identical_rolls_and_keeps_hidden_checks_private(
     tmp_path, caplog
 ):
@@ -206,7 +243,9 @@ def test_failed_resolution_retries_identical_rolls_and_keeps_hidden_checks_priva
             for record in caplog.records
             if "Private guidance checks" in record.getMessage()
         ]
-        assert len(private_logs) == 2
+        assert len(private_logs) == 4
+        assert len(resolver.received_rolls) == 4
+        assert all(rolls == resolver.received_rolls[0] for rolls in resolver.received_rolls)
         assert "reused=False" in private_logs[0]
         assert "reused=True" in private_logs[1]
         assert private_logs[0].split("rolls=")[1] == private_logs[1].split("rolls=")[1]

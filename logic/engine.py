@@ -86,7 +86,24 @@ class GameEngine(LobbyMixin):
                     ServerEvent(type="dm_thinking", payload={"active": True})
                 )
             async with asyncio.timeout(settings.llm.request_timeout_seconds * 3):
-                await work(epoch)
+                for attempt in range(3):
+                    try:
+                        await work(epoch)
+                        break
+                    except LLMResolutionError:
+                        if (
+                            attempt == 2
+                            or failure_state is not GameState.AWAITING_LLM
+                            or not self._job_current(epoch)
+                            or self.pending_resolution is None
+                        ):
+                            raise
+                        LOGGER.info(
+                            "Automatically retrying round=%d generation=%d retry=%d/2",
+                            self.round_counter + 1,
+                            epoch,
+                            attempt + 1,
+                        )
             LOGGER.info(
                 "Inference job finished generation=%d current=%s state=%s",
                 epoch,
@@ -356,6 +373,27 @@ class GameEngine(LobbyMixin):
             if player is None or not player.is_host:
                 raise ValueError("Only the host can retry a paused round.")
             if not self.round_paused or self.pending_resolution is None:
+                raise ValueError("No paused round to retry.")
+            pending = self.pending_resolution
+            finishing_task = self.inference_task
+
+        # The pause error is sent before _run_job finishes publishing usage and
+        # clearing its task pointer. Wait outside the state lock, then recheck:
+        # the host may have ended the game while cleanup was in progress.
+        if finishing_task is not None and not finishing_task.done():
+            await asyncio.gather(finishing_task, return_exceptions=True)
+
+        async with self.lock:
+            if not CURRENT_OWNER.get()():
+                return
+            player = self.players.get(client_id)
+            if player is None or not player.is_host:
+                raise ValueError("Only the host can retry a paused round.")
+            if (
+                not self.round_paused
+                or self.pending_resolution is None
+                or self.pending_resolution is not pending
+            ):
                 raise ValueError("No paused round to retry.")
             if self.inference_task is not None and not self.inference_task.done():
                 raise ValueError("The previous request is still finishing.")
