@@ -167,7 +167,13 @@ def participant_schema(
             def strip(node: Any) -> Any:
                 if isinstance(node, dict):
                     return {
-                        key: strip(value) for key, value in node.items() if key not in unsupported
+                        key: (
+                            {name: strip(child) for name, child in value.items()}
+                            if key in {"properties", "$defs", "definitions", "patternProperties"}
+                            else strip(value)
+                        )
+                        for key, value in node.items()
+                        if key not in unsupported
                     }
                 if isinstance(node, list):
                     return [strip(value) for value in node]

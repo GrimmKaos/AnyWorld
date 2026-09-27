@@ -19,10 +19,6 @@ provided by this checkout and do not establish general performance guarantees.
 
 ## Active
 
-- [ ] **P2 - Preserve player names during OpenAI schema cleanup** - logic/llm_manager.py:participant_schema.
-  - Recursive keyword removal currently deletes property names such as pattern, minimum and format while leaving them required. Traverse schema nodes while preserving property/definition names.
-  - Acceptance: all accepted player names remain in generated schemas; unsupported constraint keywords are still removed and runtime validation remains strict.
-
 - [ ] **P2 - Separate reusable instructions from retained round data** - logic/llm_manager.py:generate_resolution, _request.
   - Offline example: a 12-character action retained a 2,449-character request before its response. Each later planner/resolver request retransmits the accumulated generic instructions.
   - Keep shared policy in stable request context and retain compact actions, authoritative dice, presence notes and outcomes. Preserve privacy, causal facts and stable serialization.
@@ -89,6 +85,10 @@ provided by this checkout and do not establish general performance guarantees.
 - [ ] **P3 - Version static assets reproducibly** - Replace manual ?v= values with content/build hashes and suitable cache headers so unchanged assets stay cached and edits invalidate reliably.
 
 ## Done
+
+- [x] **P2 - Preserve player names during OpenAI schema cleanup** (2026-09-27) - logic/llm_manager.py:participant_schema.
+  - Schema cleanup preserves property and definition names while removing unsupported constraints from their schemas. Keyword-like player names remain required and available in dice, resolution and memory schemas.
+  - Validation: 107 semantic/schema and chance-event tests passed, including keyword-name regressions; Black/flake8 passed.
 
 - [x] **P1 - Preserve committed rounds when delivery or usage reporting times out** (2026-09-27) - logic/engine.py; logic/lobby.py.
   - Token measurement runs outside the effects lock and inference deadline with a five-second limit; failures use the labelled snapshot estimate. Usage is published once after final accounting and turn delivery.

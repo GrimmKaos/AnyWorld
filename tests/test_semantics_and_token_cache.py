@@ -7,9 +7,33 @@ import httpx
 import pytest
 
 from core.config import settings
-from core.schemas import DicePlan, RoundResolution, ScenarioTitle, SummaryAudit
+from core.schemas import ContextSummary, DicePlan, RoundResolution, ScenarioTitle, SummaryAudit
 from logic.llm_manager import LLMContextManager, LLMResolutionError, participant_schema
 from test_priority_one_llm import FakeClient, memory
+
+
+@pytest.mark.parametrize(
+    "base,field",
+    [
+        (DicePlan, "rolls"),
+        (RoundResolution, "player_resolutions"),
+        (ContextSummary, "player_states"),
+    ],
+)
+def test_schema_cleanup_preserves_player_names_that_are_schema_keywords(base, field):
+    """Provider cleanup must not interpret user-supplied property names as constraints."""
+    names = ("pattern", "minimum", "format", "minLength", "Alice")
+    schema = participant_schema(base, names, provider="openai")
+    document = schema.model_json_schema()
+    players = document["properties"][field]
+    assert set(players["properties"]) == set(names)
+    assert set(players["required"]) == set(names)
+    assert players["additionalProperties"] is False
+    if base is RoundResolution:
+        assert "minLength" not in document["properties"]["global_narrative"]
+        assert all("minLength" not in value for value in players["properties"].values())
+    elif base is DicePlan:
+        assert "maxItems" not in document["properties"]["hidden_rolls"]
 
 
 @pytest.mark.parametrize(
