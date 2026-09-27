@@ -18,6 +18,7 @@ from logic.validation import clean_text
 
 LOGGER = logging.getLogger(__name__)
 IDLE_ACTION = "[SYSTEM INJECTION: Player disconnected. Idle.]"
+USAGE_REFRESH_TIMEOUT_SECONDS = 5.0
 
 
 class GameEngine(LobbyMixin):
@@ -127,8 +128,19 @@ class GameEngine(LobbyMixin):
                 async with self.lock:
                     if not self._job_current(epoch):
                         return
-                    self.state = failure_state
-                    self.round_paused = failure_state is GameState.AWAITING_LLM
+                    committed = self.state is not GameState.AWAITING_LLM
+                    if committed:
+                        directive = self._next_turn_locked()
+                    else:
+                        self.state = failure_state
+                        self.round_paused = failure_state is GameState.AWAITING_LLM
+                if committed:
+                    # Delivery can hit the job deadline after state has committed.
+                    # Do not offer a retry for actions that have already resolved.
+                    LOGGER.warning("Preserving committed state generation=%d", epoch)
+                    if directive is not None:
+                        await self.sender.broadcast_global(directive)
+                    return
                 await self.sender.broadcast_global(
                     ServerEvent(
                         type="error",
@@ -148,14 +160,20 @@ class GameEngine(LobbyMixin):
                     )
                 )
         finally:
-            async with self.effects_lock:
+            try:
+                async with self.effects_lock:
+                    if self._job_current(epoch):
+                        await self.sender.broadcast_global(
+                            ServerEvent(type="dm_thinking", payload={"active": False})
+                        )
                 if self._job_current(epoch):
-                    await self._publish_usage()
-                    await self.sender.broadcast_global(
-                        ServerEvent(type="dm_thinking", payload={"active": False})
-                    )
-            if self.inference_task is asyncio.current_task():
-                self.inference_task = None
+                    await self._refresh_usage()
+                async with self.effects_lock:
+                    if self._job_current(epoch):
+                        await self._publish_usage()
+            finally:
+                if self.inference_task is asyncio.current_task():
+                    self.inference_task = None
 
     async def wait_for_inference(self) -> None:
         """Join owned work (used by shutdown callers and deterministic tests)."""
@@ -550,21 +568,28 @@ class GameEngine(LobbyMixin):
                 dice_results=public_dice,
             )
             await self.sender.broadcast_global(ServerEvent(type="state_update", payload=payload))
-            await self._publish_usage()
             if directive is not None:
                 await self.sender.broadcast_global(
                     ServerEvent(type="round_start", payload={"round_number": number + 1})
                 )
                 await self.sender.broadcast_global(directive)
 
+    async def _refresh_usage(self) -> None:
+        """Bound optional measurement outside state/effects locks and job deadlines."""
+        refresh = getattr(self.resolver, "refresh_usage", None)
+        if refresh is not None:
+            try:
+                async with asyncio.timeout(USAGE_REFRESH_TIMEOUT_SECONDS):
+                    await refresh()
+            except Exception as exc:
+                # The resolver snapshot labels stale measurements as local estimates.
+                LOGGER.warning("Usage refresh unavailable error=%s", type(exc).__name__)
+
     async def _publish_usage(self, client_id: str | None = None) -> None:
-        """Broadcast or send the latest token usage event."""
+        """Publish the current snapshot without doing backend I/O."""
         tokens = getattr(self.resolver, "last_token_usage", None)
         if tokens is None:
             return
-        refresh = getattr(self.resolver, "refresh_usage", None)
-        if refresh is not None:
-            await refresh()
         snapshot = getattr(self.resolver, "usage_snapshot", None)
         event = ServerEvent(
             type="token_usage",

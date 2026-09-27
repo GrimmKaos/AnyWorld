@@ -126,6 +126,91 @@ async def submit_round(engine):
     await engine.process_payload("player", payload("action", action="Watch Mira"))
 
 
+@pytest.mark.parametrize("failure", ["timeout", "error"])
+def test_usage_failure_cannot_pause_a_committed_round(tmp_path, monkeypatch, failure):
+    """Optional telemetry fails independently after turn delivery and final accounting."""
+    monkeypatch.setattr("logic.engine.USAGE_REFRESH_TIMEOUT_SECONDS", 0.01)
+
+    async def run():
+        engine, sender, resolver = await setup(tmp_path)
+        resolver.last_token_usage = 123
+        observations = []
+
+        async def refresh():
+            observations.append(
+                (
+                    engine.round_counter,
+                    sender.events_of_type("turn_directive")[-1].payload["round_number"],
+                    engine.effects_lock.locked(),
+                )
+            )
+            if failure == "error":
+                raise OSError("Private backend details")
+            await asyncio.Event().wait()
+
+        resolver.refresh_usage = refresh
+        await submit_round(engine)
+        await asyncio.wait_for(engine.wait_for_inference(), 1)
+        assert engine.state is GameState.ACTIVE_TURN
+        assert engine.round_counter == 1
+        assert not engine.round_paused
+        assert engine.pending_resolution is None
+        assert observations == [(1, 2, False)]
+        assert len(sender.events_of_type("token_usage")) == 1
+        assert not sender.events_of_type("error")
+        await engine.shutdown()
+
+    asyncio.run(run())
+
+
+def test_end_cancels_usage_refresh_without_waiting_for_telemetry(tmp_path):
+    """The host can end while token measurement is blocked outside the effects lock."""
+
+    async def run():
+        engine, sender, resolver = await setup(tmp_path)
+        entered = asyncio.Event()
+
+        async def refresh():
+            entered.set()
+            await asyncio.Event().wait()
+
+        resolver.refresh_usage = refresh
+        await submit_round(engine)
+        await asyncio.wait_for(entered.wait(), 1)
+        await asyncio.wait_for(engine.process_payload("host", payload("end_game")), 1)
+        assert engine.state is GameState.ENDED
+        assert engine.inference_task is None
+        assert sender.events_of_type("game_ended")
+
+    asyncio.run(run())
+
+
+def test_delivery_deadline_does_not_revert_a_committed_round(tmp_path):
+    """A deadline during result delivery must not invent an unretryable paused round."""
+
+    async def run():
+        engine, sender, resolver = await setup(tmp_path)
+        settings.llm.request_timeout_seconds = 0.02
+        original = sender.broadcast_global
+
+        async def blocked_delivery(event):
+            await original(event)
+            if event.type == "state_update":
+                await asyncio.Event().wait()
+
+        sender.broadcast_global = blocked_delivery
+        await submit_round(engine)
+        await asyncio.wait_for(engine.wait_for_inference(), 1)
+        assert engine.round_counter == 1
+        assert engine.state is GameState.ACTIVE_TURN
+        assert not engine.round_paused
+        assert sender.events_of_type("turn_directive")[-1].payload["round_number"] == 2
+        assert not sender.events_of_type("error")
+        await engine.shutdown()
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("phase", ["initial", "start", "dice", "round"])
 @pytest.mark.parametrize("after_cancel", ["cancel", "success", "failure"])
 def test_end_during_every_phase_is_terminal_and_chat_is_responsive(tmp_path, phase, after_cancel):

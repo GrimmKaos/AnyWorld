@@ -19,11 +19,6 @@ provided by this checkout and do not establish general performance guarantees.
 
 ## Active
 
-- [ ] **P1 - Preserve committed rounds when delivery or usage reporting times out** - logic/engine.py.
-  - Offline reproduction: a round commits and clears pending_resolution, then usage reporting reaches the job deadline. The failure handler pauses the game with no pending round to retry.
-  - Keep optional token measurement outside the effects lock and inference deadline, bound its duration, and prevent post-commit failures from reverting committed state. Publish usage once after final accounting.
-  - Acceptance: delayed/failed telemetry cannot pause a completed round; turn delivery and End remain responsive; genuine inference failures still retain actions/dice for retry.
-
 - [ ] **P2 - Preserve player names during OpenAI schema cleanup** - logic/llm_manager.py:participant_schema.
   - Recursive keyword removal currently deletes property names such as pattern, minimum and format while leaving them required. Traverse schema nodes while preserving property/definition names.
   - Acceptance: all accepted player names remain in generated schemas; unsupported constraint keywords are still removed and runtime validation remains strict.
@@ -94,6 +89,11 @@ provided by this checkout and do not establish general performance guarantees.
 - [ ] **P3 - Version static assets reproducibly** - Replace manual ?v= values with content/build hashes and suitable cache headers so unchanged assets stay cached and edits invalidate reliably.
 
 ## Done
+
+- [x] **P1 - Preserve committed rounds when delivery or usage reporting times out** (2026-09-27) - logic/engine.py; logic/lobby.py.
+  - Token measurement runs outside the effects lock and inference deadline with a five-second limit; failures use the labelled snapshot estimate. Usage is published once after final accounting and turn delivery.
+  - Post-commit delivery failures preserve committed state and resume the turn directive instead of creating a paused round with no actions to retry. End cancels blocked telemetry.
+  - Validation: 47 lifecycle, usage and engine tests passed, including new delayed/failed telemetry, End-during-refresh and post-commit deadline regressions; Black/flake8 passed.
 
 - [x] ~~Normalize unsupported hidden-roll labels to public checks~~ (2026-09-27)
   - Missing, percentage-based, or unrelated private sources no longer fail dice planning. The

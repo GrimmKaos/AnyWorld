@@ -203,7 +203,6 @@ class LobbyMixin:
                     payload={"title": self.scenario_title, "original_scenario": scenario},
                 ),
             )
-            await self._publish_usage(client_id)
             LOGGER.info("Scenario title ready; lobby accepting players")
 
     async def _start_game(self: "GameEngine", client_id: str, data: dict[str, object]) -> None:
