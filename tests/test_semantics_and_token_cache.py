@@ -172,6 +172,70 @@ def test_message_cache_matches_fresh_counts_and_stays_bounded():
     assert manager._context_size(history) == expected
 
 
+def test_preflight_shares_tokenization_across_schemas_and_keeps_allowances():
+    """Different response contracts do not cause repeated tokenization of one prompt."""
+
+    async def run():
+        settings.llm.provider = "compatible"
+        manager = LLMContextManager(FakeClient())
+        manager._context_discovered = True
+        calls = []
+
+        def backend(request):
+            calls.append(request.url.path)
+            if request.url.path == "/apply-template":
+                return httpx.Response(200, json={"prompt": "Formatted request"})
+            return httpx.Response(200, json={"tokens": [1, 2, 3]})
+
+        manager._http = httpx.AsyncClient(transport=httpx.MockTransport(backend))
+        await manager.preflight_round({"Alice": "Look around."}, "A room.")
+        assert calls == ["/apply-template", "/tokenize"]
+        messages = [{"role": "user", "content": "Different message"}]
+        for schema in (RoundResolution, DicePlan, None, RoundResolution):
+            count = await manager._input_tokens(messages, schema)
+            expected = 3
+            if schema is not None:
+                expected += manager._count_tokens(manager._schema_text(schema)) + 64
+            assert count == expected
+            assert ("schema allowance" in manager.token_count_method) is (schema is not None)
+        assert len(calls) == 4
+        settings.llm.model_name = "changed-model"
+        await manager._input_tokens(messages, DicePlan)
+        assert len(calls) == 6
+        await manager.close()
+
+    asyncio.run(run())
+
+
+def test_failed_tokenization_is_retried_for_another_schema():
+    """A fallback estimate cannot hide tokenizer recovery behind a cache entry."""
+
+    async def run():
+        settings.llm.provider = "compatible"
+        manager = LLMContextManager(FakeClient())
+        available = False
+
+        def backend(request):
+            if not available:
+                return httpx.Response(503)
+            if request.url.path == "/apply-template":
+                return httpx.Response(200, json={"prompt": "Formatted request"})
+            return httpx.Response(200, json={"tokens": [1, 2]})
+
+        manager._http = httpx.AsyncClient(transport=httpx.MockTransport(backend))
+        messages = [{"role": "user", "content": "A fact"}]
+        await manager._input_tokens(messages, RoundResolution)
+        assert manager.token_count_method == "conservative UTF-8 estimate"
+        assert not manager._request_counts
+        available = True
+        await manager._input_tokens(messages, DicePlan)
+        assert manager.token_count_method == "backend template/tokenizer + schema allowance"
+        assert await manager._input_tokens(messages, None) == 2
+        await manager.close()
+
+    asyncio.run(run())
+
+
 def test_rejected_summary_audit_preserves_original_context():
     """A failed memory audit spends tokens but commits neither memory nor history."""
 

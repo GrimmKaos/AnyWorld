@@ -24,10 +24,6 @@ provided by this checkout and do not establish general performance guarantees.
   - Keep shared policy in stable request context and retain compact actions, authoritative dice, presence notes and outcomes. Preserve privacy, causal facts and stable serialization.
   - Acceptance: reduced retained/request tokens, with deployed-backend comparisons covering adjudication, possessions, injuries and unresolved facts; no savings percentage assumed.
 
-- [ ] **P2 - Reuse message tokenization across output schemas** - logic/llm_manager.py:_input_tokens, preflight_round.
-  - Mocked trace confirms two identical apply-template/tokenize pairs per preflight when planner and resolver use the same system prompt. Cache message counts separately from schema allowances and cache schema serialization.
-  - Acceptance: one backend tokenization pair for identical messages across schemas; template/model changes invalidate counts; unavailable tokenization remains retryable and estimates remain labelled.
-
 - [ ] **P2 - Reduce serial compaction-prefix probes** - logic/llm_manager.py:_compact_if_needed.
   - Growing-prefix scans repeatedly tokenize overlapping history, producing quadratic cumulative input volume when many prefixes fit.
   - Select likely prefixes using local estimates, then verify backend budgets and adjust conservatively. Preserve audit reserves, rollback and durable facts.
@@ -85,6 +81,10 @@ provided by this checkout and do not establish general performance guarantees.
 - [ ] **P3 - Version static assets reproducibly** - Replace manual ?v= values with content/build hashes and suitable cache headers so unchanged assets stay cached and edits invalidate reliably.
 
 ## Done
+
+- [x] **P2 - Reuse message tokenization across output schemas** (2026-09-27) - logic/llm_manager.py.
+  - Cache formatted-message counts independently of response schemas, then add each schema's allowance. Schema serialization uses a bounded cache. Retained-context measurements reuse base counts without inheriting schema allowances.
+  - Validation: 83 token-cache, budget, semantic and usage tests passed; identical preflight messages now require one mocked apply-template/tokenize pair instead of two. Model/template changes recount and backend failures remain retryable. Black/flake8 passed; no live latency or token-savings claim.
 
 - [x] **P2 - Preserve player names during OpenAI schema cleanup** (2026-09-27) - logic/llm_manager.py:participant_schema.
   - Schema cleanup preserves property and definition names while removing unsupported constraints from their schemas. Keyword-like player names remain required and available in dice, resolution and memory schemas.

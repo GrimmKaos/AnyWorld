@@ -534,7 +534,9 @@ class LLMContextManager:
         cap_kind = "summary" if kind in {"summary_audit", "event_audit", "dice_audit"} else kind
         return getattr(settings.llm, f"{cap_kind}_output_tokens")
 
-    def _schema_text(self, schema: type[BaseModel]) -> str:
+    @staticmethod
+    @lru_cache(maxsize=64)
+    def _schema_text(schema: type[BaseModel]) -> str:
         """Return the compact JSON schema text for a response model."""
         return json.dumps(schema.model_json_schema(), ensure_ascii=False, separators=(",", ":"))
 
@@ -573,7 +575,7 @@ class LLMContextManager:
     async def _input_tokens(
         self, messages: list[dict[str, str]], schema: type[BaseModel] | None
     ) -> int:
-        """Reuse bounded counts for identical formatted requests and tokenizer identity."""
+        """Reuse formatted message counts across schemas with the same tokenizer identity."""
         identity = (
             settings.llm.provider,
             settings.llm.endpoint,
@@ -581,27 +583,29 @@ class LLMContextManager:
             settings.llm.tokenizer_encoding,
             self._template_identity,
             self._template_options(),
-            self._schema_text(schema) if schema is not None else None,
             messages,
         )
         key = sha256(json.dumps(identity, ensure_ascii=False).encode("utf-8")).digest()
         if key in self._request_counts:
             count, method = self._request_counts[key]
             self._request_counts.move_to_end(key)
-            self.token_count_method = method
-            return count
-        count = await self._uncached_input_tokens(messages, schema)
-        # Retry unavailable backend tokenization on the next call rather than pinning a failure.
-        if self.token_count_method != "conservative UTF-8 estimate":
-            self._request_counts[key] = (count, self.token_count_method)
-            if len(self._request_counts) > 128:
-                self._request_counts.popitem(last=False)
+        else:
+            count = await self._uncached_message_tokens(messages)
+            method = self.token_count_method
+            # Retry unavailable tokenization rather than pinning a backend failure.
+            if method != "conservative UTF-8 estimate":
+                self._request_counts[key] = (count, method)
+                if len(self._request_counts) > 128:
+                    self._request_counts.popitem(last=False)
+        self.token_count_method = method
+        if schema is not None:
+            count += self._count_tokens(self._schema_text(schema)) + 64
+            if method == "backend template/tokenizer":
+                self.token_count_method += " + schema allowance"
         return count
 
-    async def _uncached_input_tokens(
-        self, messages: list[dict[str, str]], schema: type[BaseModel] | None
-    ) -> int:
-        """Count input tokens using the backend tokenizer or a conservative estimate."""
+    async def _uncached_message_tokens(self, messages: list[dict[str, str]]) -> int:
+        """Count formatted messages without a response-schema allowance."""
         if settings.llm.provider == "openai" and not self._encoding_loaded:
             self._encoding_loaded = True
             try:
@@ -631,18 +635,11 @@ class LLMContextManager:
                 token_ids = tokens.json()["tokens"]
                 if not isinstance(token_ids, list):
                     raise ValueError("Invalid tokenizer response")
-                if schema is None:
-                    self.token_count_method = "backend template/tokenizer"
-                    return len(token_ids)
-                self.token_count_method = "backend template/tokenizer + schema allowance"
-                return len(token_ids) + self._count_tokens(self._schema_text(schema)) + 64
+                self.token_count_method = "backend template/tokenizer"
+                return len(token_ids)
             except (httpx.HTTPError, ValueError, KeyError, TypeError):
                 self.token_count_method = "conservative UTF-8 estimate"
-        return (
-            self._estimate_input(messages, schema)
-            if schema is not None
-            else self._context_size(messages)
-        )
+        return self._context_size(messages)
 
     async def preflight_round(self, actions: dict[str, str], current_state: str = "") -> None:
         """Reject impossible fixed context/actions before accepting the next action.
