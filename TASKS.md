@@ -3,7 +3,8 @@
 Static review: 2026-09-14, including pre-existing working-tree edits. Implementation was read
 only; venv and .venv were excluded. No tests, app startup or live inference were performed.
 P1 = correctness/security or substantial waste; P2 = optimization/reliability; P3 = optional.
-Active items are recommendations, not implementation already authorized or underway.
+Active items remain open until their acceptance checks pass. Implementation of the 2026-09-27
+review findings was authorized on 2026-09-27; other backlog items remain recommendations.
 
 Current review policy: offline tests may run in read-only reviews when temporary files are
 acceptable. Per-test working directories and their artifacts are deleted on teardown, including
@@ -17,6 +18,38 @@ are not part of the published repository; these observations are not reproducibl
 provided by this checkout and do not establish general performance guarantees.
 
 ## Active
+
+- [ ] **P1 - Preserve committed rounds when delivery or usage reporting times out** - logic/engine.py.
+  - Offline reproduction: a round commits and clears pending_resolution, then usage reporting reaches the job deadline. The failure handler pauses the game with no pending round to retry.
+  - Keep optional token measurement outside the effects lock and inference deadline, bound its duration, and prevent post-commit failures from reverting committed state. Publish usage once after final accounting.
+  - Acceptance: delayed/failed telemetry cannot pause a completed round; turn delivery and End remain responsive; genuine inference failures still retain actions/dice for retry.
+
+- [ ] **P2 - Preserve player names during OpenAI schema cleanup** - logic/llm_manager.py:participant_schema.
+  - Recursive keyword removal currently deletes property names such as pattern, minimum and format while leaving them required. Traverse schema nodes while preserving property/definition names.
+  - Acceptance: all accepted player names remain in generated schemas; unsupported constraint keywords are still removed and runtime validation remains strict.
+
+- [ ] **P2 - Separate reusable instructions from retained round data** - logic/llm_manager.py:generate_resolution, _request.
+  - Offline example: a 12-character action retained a 2,449-character request before its response. Each later planner/resolver request retransmits the accumulated generic instructions.
+  - Keep shared policy in stable request context and retain compact actions, authoritative dice, presence notes and outcomes. Preserve privacy, causal facts and stable serialization.
+  - Acceptance: reduced retained/request tokens, with deployed-backend comparisons covering adjudication, possessions, injuries and unresolved facts; no savings percentage assumed.
+
+- [ ] **P2 - Reuse message tokenization across output schemas** - logic/llm_manager.py:_input_tokens, preflight_round.
+  - Mocked trace confirms two identical apply-template/tokenize pairs per preflight when planner and resolver use the same system prompt. Cache message counts separately from schema allowances and cache schema serialization.
+  - Acceptance: one backend tokenization pair for identical messages across schemas; template/model changes invalidate counts; unavailable tokenization remains retryable and estimates remain labelled.
+
+- [ ] **P2 - Reduce serial compaction-prefix probes** - logic/llm_manager.py:_compact_if_needed.
+  - Growing-prefix scans repeatedly tokenize overlapping history, producing quadratic cumulative input volume when many prefixes fit.
+  - Select likely prefixes using local estimates, then verify backend budgets and adjust conservatively. Preserve audit reserves, rollback and durable facts.
+  - Acceptance: fewer backend probes for long histories with no over-budget summary/audit requests or lost memory.
+
+- [ ] **P3 - Simplify the resolver boundary and outcome presentation** - logic/models.py; logic/engine.py; logic/llm_manager.py.
+  - Make resolver fakes implement the required protocol, remove optional-method compatibility paths, and move shared exceptions out of the concrete backend.
+  - Remove unreachable UUID/missing-outcome fallbacks after exact-name validation; establish one normalization boundary while keeping remembered and displayed outcomes consistent.
+  - Acceptance: no unchecked resolution fallback, identical valid outcomes, and existing fake-resolver/lifecycle coverage passes.
+
+- [ ] **P3 - Batch frontend log rendering** - static/js/app.js.
+  - Append round content as a batch and scroll once per event instead of reading layout after every insertion.
+  - Acceptance: action deduplication, DOM limits, round styling and reconnect rendering remain correct; long rounds avoid repeated forced layouts.
 
 - [ ] **P2 - Use a compact fact ledger plus recent rounds for narrative memory** - core/schemas.py; logic/engine.py; logic/llm_manager.py.
   - Maintain authoritative players, world, NPCs, resources and unresolved threads, applying validated changes from the existing resolution where feasible. Keep rich prose in transcripts/UI instead of retransmitting it indefinitely.
@@ -33,10 +66,12 @@ provided by this checkout and do not establish general performance guarantees.
 - [ ] **P2 - Bound slow-socket backpressure** - api/server.py:ConnectionManager._send_text, broadcast_global.
   - Broadcasts already serialize once; per-socket send locks and a five-second timeout close failing sockets (close timeout: two seconds). Broadcasts still await all sends.
   - Verify slow-client isolation and prompt player-disconnect handling under load; consider bounded delivery queues if needed. Acceptance: stalled receivers cannot hold up healthy clients or remain active turn participants indefinitely.
+  - Review (2026-09-27): sends awaited under effects_lock can delay turn delivery and End by the five-second send plus two-second close timeouts. Use bounded ordered per-client queues with prompt presence updates on overflow/failure.
 
 - [ ] **P2 - Recover missed rounds and preserve access to full history** - static/js/app.js:applySnapshot, trimContainer; logic/lobby.py:\_snapshot_locked.
   - Existing DOM prevents snapshot state replacement after disconnect. Reload only receives current state; the 500-entry cap deletes early history without a retrieval path.
   - Add public event sequence/cursor replay and paginated/virtualized history. Acceptance: reconnect restores missed events once and users can reach the opening without unbounded DOM growth or private-memory exposure.
+  - First step: track the last rendered completed round and include its full public result (outcomes and public dice) in snapshots. Never use private HTML transcripts as public replay data.
 
 - [ ] **P2 - Verify dependency bounds and clean installation** - INSTALL.md; pyproject.toml; api/tls_bootstrap.py.
   - Runtime documentation now covers HTTPS, certificate lifetime and address coverage, private transcript contents, reconnects, and context counting. Minimum-version compatibility still needs verification.
@@ -55,7 +90,7 @@ provided by this checkout and do not establish general performance guarantees.
 
 - [ ] **P3 - Support multiple sessions and host reset** - Isolate engines, resolvers, credentials, transcripts and cancellation before adding workers/reset. Retains earlier repository backlog intent.
 - [ ] **P3 - Evaluate multilingual play** - Retains earlier translation backlog intent; assess coherence and token budgets rather than assuming a model class is required.
-- [ ] **P3 - Improve transcript resilience and colors** - logic/transcript.py ignores player_colors; positional CSS changes colors when participants are omitted. Writes/finalization are already serialized and the palette now matches the game. Add stable player colors, bounded filenames, and exclusive creation; test retry after write failure. The unused previous_state transcript parameter and its call arguments have been removed.
+- [ ] **P3 - Improve transcript resilience and colors** - logic/transcript.py ignores player_colors; positional CSS changes colors when participants are omitted and sorted dice can disagree. Writes/finalization are already serialized and the palette now matches the game. Apply the supplied stable color mapping to actions, outcomes and dice; add bounded filenames and exclusive creation; test retry after write failure. The unused previous_state transcript parameter and its call arguments have been removed.
 - [ ] **P3 - Version static assets reproducibly** - Replace manual ?v= values with content/build hashes and suitable cache headers so unchanged assets stay cached and edits invalidate reliably.
 
 ## Done
