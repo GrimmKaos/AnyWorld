@@ -67,10 +67,10 @@ border-radius:.65rem;background:rgb(27 44 40 / 65%);color:var(--text)}}
 border-radius:.65rem;margin:.8rem 0}}
 footer{{color:var(--muted);text-align:center;padding:1rem}}
 @media(max-width:700px){{body{{margin:1rem auto;padding:0 .65rem}}}}
-dl dt:nth-of-type(8n+1){{color:#79c0ff}}dl dt:nth-of-type(8n+2){{color:#ffa657}}
-dl dt:nth-of-type(8n+3){{color:#56d364}}dl dt:nth-of-type(8n+4){{color:#ff7b72}}
-dl dt:nth-of-type(8n+5){{color:#d2a8ff}}dl dt:nth-of-type(8n+6){{color:#f2cc60}}
-dl dt:nth-of-type(8n+7){{color:#a5d6ff}}dl dt:nth-of-type(8n){{color:#ff9bce}}
+dt.player-color-0{{color:#79c0ff}}dt.player-color-1{{color:#ffa657}}
+dt.player-color-2{{color:#56d364}}dt.player-color-3{{color:#ff7b72}}
+dt.player-color-4{{color:#d2a8ff}}dt.player-color-5{{color:#f2cc60}}
+dt.player-color-6{{color:#a5d6ff}}dt.player-color-7{{color:#ff9bce}}
 </style></head><body><header><h1>Anyworld - {escape(title)}</h1>
 {scenario_html}{guidance_html}<h2>Opening scenario</h2>
 <p class="state">{escape(initial_state)}</p></header><main>
@@ -89,20 +89,23 @@ dl dt:nth-of-type(8n+7){{color:#a5d6ff}}dl dt:nth-of-type(8n){{color:#ff9bce}}
         chance_events: list[ChanceEventResult] | None = None,
     ) -> None:
         """Append a resolved round's actions, dice and results."""
-        player_colors = player_colors or {}
-
-        # Actions and results retain join order, so nth-of-type colors the same player
-        # consistently without changing the readable transcript markup.
+        if player_colors is None:
+            player_colors = {name: index for index, name in enumerate(actions)}
         actions_html = "".join(
-            f"<dt>{escape(name)}</dt><dd>{escape(action)}</dd>" for name, action in actions.items()
+            f"<dt{self._color_attribute(name, player_colors)}>{escape(name)}</dt>"
+            f"<dd>{escape(action)}</dd>"
+            for name, action in actions.items()
         )
         results_html = "".join(
-            f"<dt>{escape(name)}</dt><dd>{escape(result)}</dd>"
+            f"<dt{self._color_attribute(name, player_colors)}>{escape(name)}</dt>"
+            f"<dd>{escape(result)}</dd>"
             for name, result in resolution.player_resolutions.items()
         )
-        dice_section = self._render_dice_section(dice_results)
+        dice_section = self._render_dice_section(dice_results, player_colors=player_colors)
         private_section = self._render_dice_section(
-            hidden_dice_results, title="Private checks from DM guidance"
+            hidden_dice_results,
+            title="Private checks from DM guidance",
+            player_colors=player_colors,
         )
         event_section = ""
         if chance_events:
@@ -130,7 +133,17 @@ dl dt:nth-of-type(8n+7){{color:#a5d6ff}}dl dt:nth-of-type(8n){{color:#ff9bce}}
         LOGGER.info("Transcript round appended round=%d", number)
 
     @staticmethod
-    def _render_dice_section(dice_results: dict[str, int] | None, title: str = "Dice rolls") -> str:
+    def _color_attribute(name: str, player_colors: dict[str, int]) -> str:
+        """Use join-order colors even when other participants are absent or sorted."""
+        index = player_colors.get(name)
+        return f' class="player-color-{index % 8}"' if isinstance(index, int) else ""
+
+    @staticmethod
+    def _render_dice_section(
+        dice_results: dict[str, int] | None,
+        title: str = "Dice rolls",
+        player_colors: dict[str, int] | None = None,
+    ) -> str:
         """Render labeled public or private checks, omitting empty sections."""
         if not dice_results:
             return ""
@@ -141,7 +154,8 @@ dl dt:nth-of-type(8n+7){{color:#a5d6ff}}dl dt:nth-of-type(8n){{color:#ff9bce}}
         for name, value in sorted(dice_results.items()):
             description = describe_roll(value)
             label = f"{name}: {value}/100 ({description})"
-            roll_items.append(f"<dt>{escape(label)}</dt><dd></dd>")
+            color = GameTranscript._color_attribute(name, player_colors or {})
+            roll_items.append(f"<dt{color}>{escape(label)}</dt><dd></dd>")
         return (
             f'<div class="dice-rolls"><h3>{escape(title)}</h3>'
             f"<dl>{''.join(roll_items)}</dl></div>"

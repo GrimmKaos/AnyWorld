@@ -77,10 +77,14 @@ provided by this checkout and do not establish general performance guarantees.
 
 - [ ] **P3 - Support multiple sessions and host reset** - Isolate engines, resolvers, credentials, transcripts and cancellation before adding workers/reset. Retains earlier repository backlog intent.
 - [ ] **P3 - Evaluate multilingual play** - Retains earlier translation backlog intent; assess coherence and token budgets rather than assuming a model class is required.
-- [ ] **P3 - Improve transcript resilience and colors** - logic/transcript.py ignores player_colors; positional CSS changes colors when participants are omitted and sorted dice can disagree. Writes/finalization are already serialized and the palette now matches the game. Apply the supplied stable color mapping to actions, outcomes and dice; add bounded filenames and exclusive creation; test retry after write failure. The unused previous_state transcript parameter and its call arguments have been removed.
+- [ ] **P3 - Improve transcript resilience** - logic/transcript.py. Writes/finalization are already serialized. Add bounded filenames and exclusive creation; test retry after write failure. Stable player colors are completed separately below. The unused previous_state transcript parameter and its call arguments have been removed.
 - [ ] **P3 - Version static assets reproducibly** - Replace manual ?v= values with content/build hashes and suitable cache headers so unchanged assets stay cached and edits invalidate reliably.
 
 ## Done
+
+- [x] **P3 - Keep transcript colors stable across missing players and sorted dice** (2026-09-27) - logic/transcript.py.
+  - Actions, outcomes, public dice and private checks now use the supplied join-index mapping, with the same eight-color palette as the UI. Positional CSS no longer changes identities when participants are omitted; names remain HTML-escaped.
+  - Validation: regression coverage includes reordered outcomes, absent players, sorted dice, palette wrapping and escaped names. Full suite: 233 Python tests and 16 frontend tests passed; Black/flake8 passed. No live inference or backend benchmark was run.
 
 - [x] **P2 - Reuse message tokenization across output schemas** (2026-09-27) - logic/llm_manager.py.
   - Cache formatted-message counts independently of response schemas, then add each schema's allowance. Schema serialization uses a bounded cache. Retained-context measurements reuse base counts without inheriting schema allowances.

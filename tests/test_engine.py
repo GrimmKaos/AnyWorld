@@ -145,8 +145,8 @@ def test_full_round_is_strict_and_logged(tmp_path: Path) -> None:
         assert engine.transcript.path is not None
         transcript = engine.transcript.path.read_text(encoding="utf-8")
         assert "<h2>Round 1</h2>" in transcript
-        assert "<dt>Host</dt><dd>Opens the gate</dd>" in transcript
-        assert "<dt>Player</dt><dd>Keeps watch</dd>" in transcript
+        assert '<dt class="player-color-0">Host</dt><dd>Opens the gate</dd>' in transcript
+        assert '<dt class="player-color-1">Player</dt><dd>Keeps watch</dd>' in transcript
         assert '<p class="state">State after round 1.</p>' in transcript
 
     asyncio.run(run())
@@ -371,7 +371,7 @@ def test_round_without_checks_never_rolls_and_emits_clean_outcomes(tmp_path, mon
         }
         assert engine.round_counter == 1
         transcript = engine.transcript.path.read_text(encoding="utf-8")
-        assert "<dt>Host</dt><dd>Sees a journal.</dd>" in transcript
+        assert '<dt class="player-color-0">Host</dt><dd>Sees a journal.</dd>' in transcript
         assert "Dice rolls" not in transcript
 
     asyncio.run(run())

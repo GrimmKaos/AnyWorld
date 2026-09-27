@@ -49,6 +49,36 @@ def test_html_transcript_escapes_content_and_finalizes(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
+def test_transcript_colors_follow_identity_across_absence_and_sorted_dice(tmp_path):
+    """An omitted player or alphabetical dice order cannot shift another player's color."""
+
+    async def run():
+        transcript = GameTranscript(tmp_path)
+        await transcript.start("Quest", "Opening")
+        colors = {"Absent": 0, "<Zoe>": 10, "Amy": 4}
+        await transcript.append_round(
+            1,
+            {"Amy": "Wait", "<Zoe>": "Look"},
+            RoundResolution(
+                global_narrative="A quiet room.",
+                player_resolutions={"<Zoe>": "Looks around.", "Amy": "Waits."},
+            ),
+            {"Amy": 75, "<Zoe>": 40},
+            player_colors=colors,
+            hidden_dice_results={"Amy": 12},
+        )
+        content = transcript.path.read_text(encoding="utf-8")
+        assert content.count('<dt class="player-color-2">&lt;Zoe&gt;</dt>') == 2
+        assert '<dt class="player-color-2">&lt;Zoe&gt;: 40/100' in content
+        assert content.count('<dt class="player-color-4">Amy</dt>') == 2
+        assert '<dt class="player-color-4">Amy: 75/100' in content
+        assert '<dt class="player-color-4">Amy: 12/100' in content
+        assert "nth-of-type" not in content
+        await transcript.finalize()
+
+    asyncio.run(run())
+
+
 def test_private_transcript_sections_escape_content_and_omit_empty_sections(tmp_path):
     """Archive hidden checks without interpreting host guidance or player names as HTML."""
 
