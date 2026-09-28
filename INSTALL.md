@@ -152,10 +152,14 @@ Additional optional `llm` settings:
 
 | Setting                      | Default | Behavior                                                                                                                                                                                                                 |
 | ---------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `enable_thinking`            | `null`  | Sends `chat_template_kwargs.enable_thinking` only to compatible backends when set. Support depends on the backend/template; the current `config.yaml` sets it to `false`.                                                |
+| `reasoning_effort`           | `none`  | Shared thinking effort for compatible and OpenAI backends: `none`, `low`, `medium`, or `high`. Compatible backends receive matching `chat_template_kwargs`; support depends on the loaded model/template. The request reserves 2,048/4,096/8,192 completion tokens for low/medium/high reasoning before the configured visible-output cap. |
 | `planner_system_prompt`      | `null`  | Replaces the system prompt for dice planning only. Scenario, private guidance, memory, and recent history are still supplied.                                                                                            |
 | `compaction_target_fraction` | `0.75`  | After compaction starts, aims to leave the upcoming request within this fraction of the context window. Allowed range: `0.5`–`1.0`.                                                                                      |
 | `history_round_limit`        | `null`  | Optionally requests earlier memory checkpoints after this many stored request/response pairs, including the generated opening; title generation is not stored. Allowed range: `2`–`100`; this is not a hard history cap. |
+
+Scenario titles and the short dice, event-audit, and summary-audit requests force
+`reasoning_effort: none` so their small structured-output budgets are not consumed by hidden
+thinking. Round, opening, and compaction-summary generation use the configured effort.
 
 Choose caps that leave sufficient input capacity within the effective backend context, especially
 for large parties. Before a request exceeds its budget, older rounds are merged into separate
@@ -335,12 +339,16 @@ under `llm` in the configuration. Raw-response file logging is disabled by defau
 resets the current game. Each completion HTTP response is saved as a timestamped JSON file under
 `.debug/llm/` in the working directory. The `body` field contains the raw response text,
 recorded before SDK parsing, narrative checks, name normalization, or display. This includes
-responses rejected during retries and HTTP error responses. Connection failures with no HTTP
-response cannot produce a raw-response file.
+responses rejected during retries and HTTP error responses. The `thinking_sequences` field
+extracts `reasoning_content` (or `thinking`) from each completion choice when the backend
+provides it. A request record is written before waiting for the backend, so timeouts and
+connection failures still leave the sent request in the diagnostic file; its response fields
+remain null when no HTTP response arrives.
 
 These files are private diagnostics: model output can include hidden dice or private guidance,
 and error bodies can contain sensitive data. They are excluded from Git and are not served by
-the web app. Request prompts, headers, and credentials are not deliberately logged. Files are
-not automatically rotated; disable the option after diagnosis and remove unneeded logs.
+the web app. The `request` field contains the sent method, path, and body; headers and
+credentials are excluded. Files are not automatically rotated; disable the option after
+diagnosis and remove unneeded logs.
 Sampling settings remain controlled by the backend; Anyworld does not override repetition or
 presence penalties.

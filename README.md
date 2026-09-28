@@ -22,7 +22,7 @@ from the repository directory, then open the local game page at https://127.0.0.
    and the party's goal. The host may also add one optional percentage-based event and separate
    freeform private DM guidance.
 2. The AI generates the scenario title. Players can then join using the player password. Everyone
-   sees the banner and the host-typed scenario prompt..
+   sees the banner and the host-typed scenario prompt.
 3. When everyone is ready, the host clicks **Start Game**. The AI writes the **Opening scenario**,
    introducing the joined characters and their roles while explaining the setting and goal.
 4. Players submit actions in join order. Once all actions are collected, the AI resolves them

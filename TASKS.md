@@ -19,12 +19,12 @@ provided by this checkout and do not establish general performance guarantees.
 
 ## Active
 
-- [ ] **P2 - Separate reusable instructions from retained round data** - logic/llm_manager.py:generate_resolution, _request.
+- [ ] **P2 - Separate reusable instructions from retained round data** - logic/llm_manager.py:generate_resolution, \_request.
   - Offline example: a 12-character action retained a 2,449-character request before its response. Each later planner/resolver request retransmits the accumulated generic instructions.
   - Keep shared policy in stable request context and retain compact actions, authoritative dice, presence notes and outcomes. Preserve privacy, causal facts and stable serialization.
   - Acceptance: reduced retained/request tokens, with deployed-backend comparisons covering adjudication, possessions, injuries and unresolved facts; no savings percentage assumed.
 
-- [ ] **P2 - Reduce serial compaction-prefix probes** - logic/llm_manager.py:_compact_if_needed.
+- [ ] **P2 - Reduce serial compaction-prefix probes** - logic/llm_manager.py:\_compact_if_needed.
   - Growing-prefix scans repeatedly tokenize overlapping history, producing quadratic cumulative input volume when many prefixes fit.
   - Select likely prefixes using local estimates, then verify backend budgets and adjust conservatively. Preserve audit reserves, rollback and durable facts.
   - Acceptance: fewer backend probes for long histories with no over-budget summary/audit requests or lost memory.
@@ -50,7 +50,7 @@ provided by this checkout and do not establish general performance guarantees.
   - Acceptance: compare total tokens, latency and coherent/fair outcomes. A routine-looking action must still account for contextual hazards.
   - Experiment (2026-09-15): shorter prompts did not consistently lower total cost and a candidate missed hidden-roll classification. Full planner remains default. Configured Gemma thinking is disabled to reserve bounded output for structured answers. Safe-action overrolling remains a live-model limitation; no one-call or deterministic bypass was adopted.
 
-- [ ] **P2 - Bound slow-socket backpressure** - api/server.py:ConnectionManager._send_text, broadcast_global.
+- [ ] **P2 - Bound slow-socket backpressure** - api/server.py:ConnectionManager.\_send_text, broadcast_global.
   - Broadcasts already serialize once; per-socket send locks and a five-second timeout close failing sockets (close timeout: two seconds). Broadcasts still await all sends.
   - Verify slow-client isolation and prompt player-disconnect handling under load; consider bounded delivery queues if needed. Acceptance: stalled receivers cannot hold up healthy clients or remain active turn participants indefinitely.
   - Review (2026-09-27): sends awaited under effects_lock can delay turn delivery and End by the five-second send plus two-second close timeouts. Use bounded ordered per-client queues with prompt presence updates on overflow/failure.
@@ -82,19 +82,23 @@ provided by this checkout and do not establish general performance guarantees.
 
 ## Done
 
-- [x] **P3 - Keep transcript colors stable across missing players and sorted dice** (2026-09-27) - logic/transcript.py.
+- [x] ~~P2 - Measure aggregate action prompts during preflight~~ (2026-09-28) - logic/llm_manager.py.
+  - Preflight now reuses the live dice-planning and baseline resolution prompt builders and their participant schemas. The brittle `1,024 + 256 * action_count` allowance was removed, and shared resolution instructions are counted before they are sent.
+  - Resolution requests are checked again after generated dice and chance-event context are available. Validation: all 271 Python tests passed; Black and Flake8 passed; no live inference or backend benchmark was run.
+
+- [x] ~~P3 - Keep transcript colors stable across missing players and sorted dice~~ (2026-09-27) - logic/transcript.py.
   - Actions, outcomes, public dice and private checks now use the supplied join-index mapping, with the same eight-color palette as the UI. Positional CSS no longer changes identities when participants are omitted; names remain HTML-escaped.
   - Validation: regression coverage includes reordered outcomes, absent players, sorted dice, palette wrapping and escaped names. Full suite: 233 Python tests and 16 frontend tests passed; Black/flake8 passed. No live inference or backend benchmark was run.
 
-- [x] **P2 - Reuse message tokenization across output schemas** (2026-09-27) - logic/llm_manager.py.
+- [x] ~~P2 - Reuse message tokenization across output schemas~~ (2026-09-27) - logic/llm_manager.py.
   - Cache formatted-message counts independently of response schemas, then add each schema's allowance. Schema serialization uses a bounded cache. Retained-context measurements reuse base counts without inheriting schema allowances.
-  - Validation: 83 token-cache, budget, semantic and usage tests passed; identical preflight messages now require one mocked apply-template/tokenize pair instead of two. Model/template changes recount and backend failures remain retryable. Black/flake8 passed; no live latency or token-savings claim.
+  - Validation: 83 token-cache, budget, semantic and usage tests passed; distinct dice and resolution preflight prompts are each tokenized once while repeated schemas reuse the cached message count. Model/template changes recount and backend failures remain retryable. Black/flake8 passed; no live latency or token-savings claim.
 
-- [x] **P2 - Preserve player names during OpenAI schema cleanup** (2026-09-27) - logic/llm_manager.py:participant_schema.
+- [x] ~~P2 - Preserve player names during OpenAI schema cleanup~~ (2026-09-27) - logic/llm_manager.py:participant_schema.
   - Schema cleanup preserves property and definition names while removing unsupported constraints from their schemas. Keyword-like player names remain required and available in dice, resolution and memory schemas.
   - Validation: 107 semantic/schema and chance-event tests passed, including keyword-name regressions; Black/flake8 passed.
 
-- [x] **P1 - Preserve committed rounds when delivery or usage reporting times out** (2026-09-27) - logic/engine.py; logic/lobby.py.
+- [x] ~~P1 - Preserve committed rounds when delivery or usage reporting times out~~ (2026-09-27) - logic/engine.py; logic/lobby.py.
   - Token measurement runs outside the effects lock and inference deadline with a five-second limit; failures use the labelled snapshot estimate. Usage is published once after final accounting and turn delivery.
   - Post-commit delivery failures preserve committed state and resume the turn directive instead of creating a paused round with no actions to retry. End cancels blocked telemetry.
   - Validation: 47 lifecycle, usage and engine tests passed, including new delayed/failed telemetry, End-during-refresh and post-commit deadline regressions; Black/flake8 passed.
@@ -151,7 +155,6 @@ provided by this checkout and do not establish general performance guarantees.
 
 - [x] ~~P2 - Fix stale tests and cover context/cache/lifecycle behavior~~ (2026-09-15)
   - At that milestone, 88 offline tests passed, with fake clients and isolated settings/transcripts. Added semantic, accounting, cache, template-option and discovery-recovery regressions plus separate opt-in live runners. Black, Flake8 and JavaScript syntax checks pass. Corrected a stale dice-description assertion without changing the dice distribution. One existing Starlette/httpx deprecation warning remains.
-
 
 The older completed items below preserve the original problem statements; their Implementation
 lines describe the fixes. Historical P1 implementation was validated with fake-model and ASGI regression tests.

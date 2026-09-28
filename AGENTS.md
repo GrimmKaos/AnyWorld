@@ -22,7 +22,8 @@ automatically approved product changes. Proposed fixes belong in TASKS.md.
 - `app.py` validates passwords and starts Uvicorn with HTTPS. `api/tls_bootstrap.py` handles
   IP discovery and self-signed certificates under `certs/`.
 - `core/config.py` exports lowercase singleton `settings`. The llm schema additionally contains
-  provider (`compatible`/`openai`), tokenizer_encoding and system_prompt. Compatible `/props`
+  provider (`compatible`/`openai`), tokenizer_encoding, system_prompt and shared
+  `reasoning_effort`. Compatible `/props`
   discovery overrides context_window_size when successful. Server passwords must be distinct.
 - `api/server.py` owns GET /, /static, /ws/{client_id}, ConnectionManager and an engine/resolver
   per ASGI lifespan. Lifespan validates passwords and closes sockets, tasks and clients.
@@ -88,13 +89,16 @@ Every generation has a configured output cap, schema/framing allowance and safet
 uses /apply-template and /tokenize when available; OpenAI uses a matching known tiktoken encoding.
 Unavailable/unknown tokenization uses a conservative UTF-8-byte estimate. Estimates are labelled;
 backend-specific template variations still require an appropriate configured safety margin.
-Aggregate actions are preflighted before acceptance. Summary requests are also bounded. Direct
-private-guidance echoes and explicit hidden-dice disclosures are rejected before remembering output;
+Aggregate actions are preflighted before acceptance using the live dice and baseline resolution
+prompt builders; the final resolution prompt is measured again after dice and chance-event context
+are available. Summary requests are also bounded. Direct private-guidance echoes and explicit
+hidden-dice disclosures are rejected before remembering output;
 this guard cannot prove arbitrary paraphrases secret-free. No application cache routing exists.
 
 Optional llm settings: initial_output_tokens (1024), round_output_tokens (2048), dice_output_tokens
 (512), summary_output_tokens (1024), token_safety_margin (256), request_timeout_seconds (120.0),
-max_retries (1), enable_thinking (null), planner_system_prompt (null), debug_raw_responses (false),
+max_retries (1), reasoning_effort (none/low/medium/high), planner_system_prompt (null),
+debug_raw_responses (false),
 compaction_target_fraction (0.75), history_round_limit (null). Title generation caps output at
 min(128, initial_output_tokens). Server admission settings: max_pending_connections (32),
 auth_timeout_seconds (30.0), max_auth_attempts (3). Parent inference jobs also have a bounded overall deadline.
