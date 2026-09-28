@@ -29,7 +29,11 @@ from logic.dice import (
 from logic.presentation import name_resolution
 from logic.debug_log import RawResponseLogger
 from logic.llm import auditing, prompts
-from logic.llm.errors import LLMBackendUnavailableError, LLMResolutionError
+from logic.llm.errors import (
+    LLMBackendUnavailableError,
+    LLMOutputTruncatedError,
+    LLMResolutionError,
+)
 from logic.llm.response_schemas import participant_schema
 from logic.llm.tokenization import TokenBudget
 from logic.llm.validation import check_semantics, check_public_output, normalize_hidden_roll_sources
@@ -288,8 +292,9 @@ class LLMContextManager:
             await self._compact_if_needed(prompt, schema, kind)
         messages = [*self._fixed_messages(kind), *(self.history if include_history else []), prompt]
         for repair in range(settings.llm.max_retries + 1):
-            result = await self._parse(messages, schema, kind, repair_attempt=repair)
+            result = None
             try:
+                result = await self._parse(messages, schema, kind, repair_attempt=repair)
                 if isinstance(result, DicePlan):
                     # A stray privacy label cannot create a roll the planner declined.
                     # Leave unknown names and duplicates for semantic validation.
@@ -387,6 +392,24 @@ class LLMContextManager:
                 )
                 if repair == settings.llm.max_retries:
                     raise
+                if kind == "dice" and isinstance(exc, LLMOutputTruncatedError):
+                    repair_instruction = (
+                        "The previous dice response reached its output limit before returning "
+                        "complete JSON. Reasoning is disabled for this request. Make a direct, "
+                        "minimal classification and return only compact JSON; omit explanations. "
+                        "Include every required player and chance-rule key. All-false action rolls "
+                        "are valid, and hidden_rolls may list only names with a true roll."
+                    )
+                else:
+                    repair_instruction = (
+                        "Correct the output contract: return only the requested object. "
+                        "Use exactly the required schema keys and player names. Include nonempty "
+                        "narrative/outcomes where requested. Hidden checks must be unique, "
+                        "required rolls from private guidance. Never disclose private guidance "
+                        "or hidden values. Do not change the supplied actions, dice or facts. "
+                        "When fixing hidden_roll_sources or hidden_rolls, preserve rolls: "
+                        "making a check public must not remove the action's required d100."
+                    )
                 messages = [
                     *messages,
                     *(
@@ -397,15 +420,8 @@ class LLMContextManager:
                     {
                         "role": "user",
                         "content": (
-                            "Correct the output contract: return only the requested object. "
-                            "Use exactly the required schema keys and player names. "
-                            "Include nonempty "
-                            "narrative/outcomes where requested. Hidden checks must be unique, "
-                            "required rolls from private guidance. Never disclose private guidance "
-                            "or hidden values. Do not change the supplied actions, dice or facts. "
-                            "When fixing hidden_roll_sources or hidden_rolls, preserve rolls: "
-                            "making a check public must not remove the action's required d100. "
-                            + "Validation issue: "
+                            repair_instruction
+                            + " Validation issue: "
                             + str(exc)
                             + " Required player keys: "
                             + json.dumps(expected_names)
@@ -562,7 +578,7 @@ class LLMContextManager:
             )
             choice = response.choices[0]
             if getattr(choice, "finish_reason", None) == "length":
-                raise LLMResolutionError(
+                raise LLMOutputTruncatedError(
                     "Model output reached its token limit; no result committed."
                 )
             parsed = choice.message.parsed
@@ -592,6 +608,10 @@ class LLMContextManager:
             error = type(exc).__name__
             response = getattr(exc, "completion", response)
             logger.warning("LLM %s failed: %s", kind, error)
+            if error == "LengthFinishReasonError":
+                raise LLMOutputTruncatedError(
+                    "Model output reached its token limit; no result committed."
+                ) from exc
             if isinstance(exc, APIConnectionError) and not isinstance(exc, APITimeoutError):
                 raise LLMBackendUnavailableError(
                     "Could not connect to the LLM backend; no result committed."

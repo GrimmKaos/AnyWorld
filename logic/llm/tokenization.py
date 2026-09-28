@@ -15,7 +15,7 @@ from .response_schemas import schema_text
 
 # Both providers count hidden reasoning within the completion cap.
 _THINKING_OUTPUT_BUDGETS = {"none": 0, "low": 2_048, "medium": 4_096, "high": 8_192}
-_NO_THINKING_KINDS = frozenset({"title", "dice_audit", "event_audit", "summary_audit"})
+_NO_THINKING_KINDS = frozenset({"title", "dice", "dice_audit", "event_audit", "summary_audit"})
 
 
 class TokenBudget:
