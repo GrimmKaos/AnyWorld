@@ -486,6 +486,32 @@ def test_slow_transient_failure_can_reach_a_retry():
     asyncio.run(run())
 
 
+def test_repair_does_not_restart_transient_retry_budget():
+    """A semantic repair uses one provider call instead of multiplying retries."""
+
+    async def run():
+        settings.llm.max_retries = 1
+        invalid = RoundResolution(
+            global_narrative="The gate remains shut.",
+            player_resolutions={"Alice": "<p>Alice waits.</p>"},
+        )
+        from openai import InternalServerError
+
+        transient = InternalServerError(
+            "temporary failure",
+            response=httpx.Response(500, request=httpx.Request("POST", "http://test.invalid")),
+            body=None,
+        )
+        responses = iter([invalid, transient])
+        client = FakeClient(lambda _kwargs: next(responses))
+        manager = LLMContextManager(client)
+        with pytest.raises(LLMResolutionError, match="failed"):
+            await manager.generate_resolution({"Alice": "Wait"})
+        assert len(client.calls) == 2
+
+    asyncio.run(run())
+
+
 def test_cancelling_compaction_keeps_original_memory_and_history():
     """Verify cancelling compaction keeps the original memory and history."""
 

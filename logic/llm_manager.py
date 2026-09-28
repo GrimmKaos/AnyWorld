@@ -1245,15 +1245,16 @@ class LLMContextManager:
             raise LLMResolutionError(
                 "Request exceeds the context budget; history and durable memory were preserved."
             )
-        retry_backoff = sum(
-            min(0.5 * 2**attempt, 8.0) for attempt in range(settings.llm.max_retries)
-        )
-        overall_timeout = (
-            settings.llm.request_timeout_seconds * (settings.llm.max_retries + 1) + retry_backoff
-        )
+        # A repair is already the next logical request for the same output. Restarting the
+        # full transient-retry sequence for every repair would multiply provider calls
+        # (max_retries + 1)^2. The initial request may use the configured retry budget; a
+        # repair gets one provider attempt and either succeeds or advances to the next repair.
+        attempt_limit = settings.llm.max_retries + 1 if repair_attempt == 0 else 1
+        retry_backoff = sum(min(0.5 * 2**attempt, 8.0) for attempt in range(attempt_limit - 1))
+        overall_timeout = settings.llm.request_timeout_seconds * attempt_limit + retry_backoff
         try:
             async with asyncio.timeout(overall_timeout):
-                for attempt in range(settings.llm.max_retries + 1):
+                for attempt in range(attempt_limit):
                     try:
                         return await self._parse_attempt(
                             messages, schema, kind, count, attempt, repair_attempt
@@ -1266,7 +1267,7 @@ class LLMContextManager:
                             or (status is not None and status >= 500)
                             or type(cause).__name__ in ("APIConnectionError", "APITimeoutError")
                         )
-                        if not transient or attempt == settings.llm.max_retries:
+                        if not transient or attempt == attempt_limit - 1:
                             raise
                         logger.info("Retrying LLM request kind=%s attempt=%d", kind, attempt + 2)
                         await asyncio.sleep(min(0.5 * 2**attempt, 8.0))
