@@ -269,9 +269,10 @@ $env:PYTHONDONTWRITEBYTECODE = "1"
 ```
 
 Use a different output filename for every model. The console ends with overall, conditional, and
-per-round success rates, for example `overall=35/40 (87.5%)`. The JSON report contains the same
-summary plus each event description, action, expected result, detected/occurred flags, pass/fail
-status, and generated response. A conditional trial passes when its triggering action produces
+per-round success rates plus the complete pass duration, for example
+`overall=35/40 (87.5%) ... duration=184.321s`. The JSON report contains the same summary,
+including `duration_seconds`, plus each event description, action, expected result,
+detected/occurred flags, pass/fail status, and generated response. A conditional trial passes when its triggering action produces
 the event and its non-triggering action does not; both trials for a per-round rule must produce
 the event. A failed model request is recorded as a failed trial so one backend error does not
 discard the rest of the run.

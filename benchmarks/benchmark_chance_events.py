@@ -14,6 +14,7 @@ import asyncio
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 from logic.dice import roll_chance
@@ -269,6 +270,7 @@ async def run_action(case: ChanceCase, label: str, actions: dict[str, str]) -> d
 
 async def run(output: Path | None = None) -> list[dict[str, Any]]:
     """Run all paired live cases and print concise feature results."""
+    started = perf_counter()
     report: list[dict[str, Any]] = []
     total_actions = len(CASES) * 2
     print(f"chance_events benchmark: {len(CASES)} cases, {total_actions} actions", flush=True)
@@ -310,6 +312,7 @@ async def run(output: Path | None = None) -> list[dict[str, Any]]:
         "overall": _score(report),
         "conditional": _score(conditional),
         "per_round": _score(per_round),
+        "duration_seconds": round(perf_counter() - started, 3),
         "failures": [
             {
                 "case": item["case"],
@@ -330,7 +333,8 @@ async def run(output: Path | None = None) -> list[dict[str, Any]]:
         f"conditional={summary['conditional']['passed']}/{summary['conditional']['total']} "
         f"({summary['conditional']['success_rate_percent']:.1f}%) | "
         f"per_round={summary['per_round']['passed']}/{summary['per_round']['total']} "
-        f"({summary['per_round']['success_rate_percent']:.1f}%)",
+        f"({summary['per_round']['success_rate_percent']:.1f}%) | "
+        f"duration={summary['duration_seconds']:.3f}s",
         flush=True,
     )
     if output is not None:
