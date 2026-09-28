@@ -626,16 +626,25 @@ class LLMContextManager:
         self, messages: list[dict[str, str]], schema: type[BaseModel] | None, kind: str = "round"
     ) -> int:
         """Reuse formatted message counts across schemas with the same tokenizer identity."""
+        template_options = self._template_options(kind)
+        template_identity = tuple(
+            (
+                name,
+                tuple(sorted(value.items())) if isinstance(value, dict) else value,
+            )
+            for name, value in sorted(template_options.items())
+        )
+        message_identity = tuple((message["role"], message["content"]) for message in messages)
         identity = (
             settings.llm.provider,
             settings.llm.endpoint,
             settings.llm.model_name,
             settings.llm.tokenizer_encoding,
             self._template_identity,
-            self._template_options(kind),
-            messages,
+            template_identity,
+            message_identity,
         )
-        key = sha256(json.dumps(identity, ensure_ascii=False).encode("utf-8")).digest()
+        key = identity
         if key in self._request_counts:
             count, method = self._request_counts[key]
             self._request_counts.move_to_end(key)
