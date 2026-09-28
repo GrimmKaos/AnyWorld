@@ -563,12 +563,6 @@ class LLMContextManager:
         """Return the compact JSON schema text for a response model."""
         return json.dumps(schema.model_json_schema(), ensure_ascii=False, separators=(",", ":"))
 
-    def _estimate_input(self, messages: list[dict[str, str]], schema: type[BaseModel]) -> int:
-        """Estimate input tokens including schema framing and a safety margin."""
-        # Reserve schema framing even on servers that compile it to a grammar outside
-        # the prompt. The margin also covers unknown chat-template control tokens.
-        return self._context_size(messages) + self._count_tokens(self._schema_text(schema)) + 64
-
     def _fits(self, count: int, kind: str) -> bool:
         """Return whether a token count fits within the context budget."""
         return count + self._request_output_limit(kind) + settings.llm.token_safety_margin <= (
@@ -714,7 +708,6 @@ class LLMContextManager:
         private_events: list[ChanceEventResult] | None = None,
         planning_input: dict[str, Any] | None = None,
         expected_names: tuple[str, ...] | None = None,
-        title_required: bool = False,
         opening_names: tuple[str, ...] | None = None,
     ) -> Any:
         """Run a single LLM request, optionally compacting history and remembering the result."""
@@ -742,7 +735,7 @@ class LLMContextManager:
         for repair in range(settings.llm.max_retries + 1):
             result = await self._parse(messages, schema, kind, repair_attempt=repair)
             try:
-                self._check_semantics(result, expected_names, title_required)
+                self._check_semantics(result, expected_names)
                 if isinstance(result, DicePlan):
                     try:
                         decisions = normalize_chance_rule_decisions(
@@ -836,7 +829,6 @@ class LLMContextManager:
                             + str(exc)
                             + " Required player keys: "
                             + json.dumps(expected_names)
-                            + (" The scenario title must be nonempty." if title_required else "")
                         ),
                     },
                 ]
@@ -1038,9 +1030,7 @@ class LLMContextManager:
         logger.info("Private chance event narrative audit passed")
 
     @staticmethod
-    def _check_semantics(
-        result: BaseModel, names: tuple[str, ...] | None, title_required: bool = False
-    ) -> None:
+    def _check_semantics(result: BaseModel, names: tuple[str, ...] | None) -> None:
         """Reject incomplete or inconsistent output before remembering it."""
         if isinstance(result, DicePlan):
             if names is not None and set(result.rolls) != set(names):
@@ -1080,9 +1070,7 @@ class LLMContextManager:
                         "Narrative must be plain prose without markup or technical status "
                         "messages; describe disconnects only through in-world consequences."
                     )
-            if not result.global_narrative.strip() or (
-                title_required and not (result.round_title or "").strip()
-            ):
+            if not result.global_narrative.strip():
                 raise LLMResolutionError("Model returned empty required narrative content.")
             if names is not None and set(result.player_resolutions) != set(names):
                 raise LLMResolutionError("Invalid resolution participants.")
@@ -1525,15 +1513,6 @@ class LLMContextManager:
                 self._context_discovered = True
         except (httpx.HTTPError, ValueError, TypeError, AttributeError):
             pass
-
-    def _bounded_messages(
-        self, prompt: dict[str, str], *, include_history: bool = True
-    ) -> list[dict[str, str]]:
-        """Synchronous conservative check; never mutate or silently evict memory."""
-        messages = [*self._fixed_messages(), *(self.history if include_history else []), prompt]
-        if not self._fits(self._estimate_input(messages, RoundResolution), "round"):
-            raise LLMResolutionError("Context exceeds budget; memory preserved.")
-        return messages
 
     def _count_tokens(self, content: str) -> int:
         """Count tokens in a string using the encoding or a byte estimate."""
