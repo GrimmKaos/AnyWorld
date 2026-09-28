@@ -95,7 +95,6 @@ class ContextSummary(StrictModel):
 class RoundResolution(StrictModel):
     """Structured outcome of a resolved round."""
 
-    round_title: str | None = None
     global_narrative: str
     player_resolutions: dict[str, str]
 

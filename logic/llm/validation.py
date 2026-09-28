@@ -32,7 +32,6 @@ def check_semantics(result: BaseModel, names: tuple[str, ...] | None) -> None:
             raise LLMResolutionError("Summary contains empty or unknown player state.")
     if isinstance(result, RoundResolution):
         for text in (
-            result.round_title or "",
             result.global_narrative,
             *result.player_resolutions.values(),
         ):
@@ -78,9 +77,7 @@ def check_public_output(
     This is a conservative backstop, not a claim to detect every paraphrase of
     a secret. Prompt instructions still distinguish observable consequences.
     """
-    text = " ".join(
-        [result.round_title or "", result.global_narrative, *result.player_resolutions.values()]
-    )
+    text = " ".join([result.global_narrative, *result.player_resolutions.values()])
     normalized = " ".join(text.casefold().split())
     fragments = re.split(r"[.!?\n]+", guidance)
     if any(

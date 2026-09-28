@@ -298,7 +298,7 @@ def test_redundant_labels_are_removed_before_remembering_outcomes():
         "I/O Error: The subject is idle.",
     ],
 )
-@pytest.mark.parametrize("field", ["global_narrative", "player_resolutions", "round_title"])
+@pytest.mark.parametrize("field", ["global_narrative", "player_resolutions"])
 def test_markup_and_status_artifacts_never_enter_narrative_history(bad_text, field):
     """Validate narrative values, not just their JSON types, without echoing bad text."""
 

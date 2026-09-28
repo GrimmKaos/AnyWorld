@@ -92,7 +92,6 @@ def participant_schema(
         )
     elif base is RoundResolution and names:
         fields["global_narrative"] = (str, Field(min_length=1))
-        fields["round_title"] = (str | None, Field(default=None, json_schema_extra={"const": None}))
     elif base is ContextSummary:
         fields["world_state"] = (str, Field(min_length=1))
     schema = create_model(base.__name__, __base__=base, **fields)

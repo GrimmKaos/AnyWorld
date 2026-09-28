@@ -515,9 +515,7 @@ class GameEngine(LobbyMixin):
                 name, resolution.player_resolutions.get(item, "No resolution was provided.")
             )
             outcomes[name] = name_resolution(name, result)
-        display = resolution.model_copy(
-            update={"round_title": None, "player_resolutions": outcomes}
-        )
+        display = resolution.model_copy(update={"player_resolutions": outcomes})
         async with self.effects_lock:
             async with self.lock:
                 if not self._job_current(epoch):

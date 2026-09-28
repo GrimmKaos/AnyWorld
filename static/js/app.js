@@ -397,8 +397,8 @@ function handleMessage(message) {
     } else if (type === "state_update") {
         setThinking(false);
         setPlayerOrder(payload.player_order);
-        if (payload.round_title) {
-            elements.title.textContent = displayGameTitle(payload.round_title);
+        if (payload.scenario_title) {
+            elements.title.textContent = displayGameTitle(payload.scenario_title);
         }
         startRound(payload.round_number);
         syncActions(payload.round_number, payload.submitted_actions);

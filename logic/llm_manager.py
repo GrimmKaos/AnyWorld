@@ -157,6 +157,7 @@ class LLMContextManager:
             kind="initial",
             expected_names=(),
             opening_names=tuple(player_names),
+            history_prompt=prompts.opening_memory_prompt(player_names),
         )
 
     async def plan_dice(self, round_buffer: dict[str, str], current_state: str = "") -> DicePlan:
@@ -214,6 +215,7 @@ class LLMContextManager:
                 if name in (hidden_rolls or set())
             },
             private_events=chance_events,
+            history_prompt=prompts.round_memory_prompt(round_buffer),
         )
 
     def _fixed_messages(self, kind: str = "round") -> list[dict[str, str]]:
@@ -284,8 +286,9 @@ class LLMContextManager:
         planning_input: dict[str, Any] | None = None,
         expected_names: tuple[str, ...] | None = None,
         opening_names: tuple[str, ...] | None = None,
+        history_prompt: dict[str, str] | None = None,
     ) -> Any:
-        """Run a single LLM request, optionally compacting history and remembering the result."""
+        """Run a request, optionally compacting history and storing a compact input record."""
         prompt = prompts.prepare_request_prompt(prompt, issubclass(schema, RoundResolution))
         await self.budget.discover_context_window()
         if include_history:
@@ -351,7 +354,6 @@ class LLMContextManager:
                     if private_events:
                         public_text = " ".join(
                             [
-                                result.round_title or "",
                                 result.global_narrative,
                                 *result.player_resolutions.values(),
                             ]
@@ -446,7 +448,12 @@ class LLMContextManager:
                         content = self._last_response_text
                 except (ValidationError, ValueError):
                     pass
-            self.history.extend([prompt, {"role": "assistant", "content": content}])
+            self.history.extend(
+                [
+                    history_prompt or prompt,
+                    {"role": "assistant", "content": content},
+                ]
+            )
         return result
 
     def begin_round_usage(self, number: int) -> None:

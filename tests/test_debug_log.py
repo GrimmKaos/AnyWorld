@@ -26,7 +26,6 @@ def test_raw_logging_precedes_sdk_parsing_and_does_not_change_requests(
     narrative = "Arxs steps cautiouslyจาก beside PRIVATE_DIAGNOSTIC."
     content = json.dumps(
         {
-            "round_title": None,
             "global_narrative": narrative,
             "player_resolutions": {"Arxs": "Arxs waits."},
         },

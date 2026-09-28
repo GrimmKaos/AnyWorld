@@ -66,7 +66,6 @@ class FakeClient:
                 result = memory()
             else:
                 result = RoundResolution(
-                    round_title="The gate",
                     global_narrative="A breeze rises.",
                     player_resolutions={
                         name: f"{name} waits."

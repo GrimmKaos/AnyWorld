@@ -63,7 +63,6 @@ class FakeResolver:
         """Return a fixed resolution for the given actions."""
         self.rounds += 1
         return RoundResolution(
-            round_title=f"Round {self.rounds}",
             global_narrative=f"State after round {self.rounds}.",
             player_resolutions={
                 name: f"Resolved: {action}" for name, action in round_buffer.items()
@@ -186,7 +185,7 @@ def test_scenario_title_is_generated_before_game_start(tmp_path: Path) -> None:
         await engine.wait_for_inference()
         assert engine.scenario_title == "The Test Quest"
         start_update = sender.events_of_type("state_update")[-1]
-        assert start_update.payload["round_title"] == "The Test Quest"
+        assert start_update.payload["scenario_title"] == "The Test Quest"
         assert start_update.payload["global_narrative"] == "Host stand at a gate."
         assert "original_scenario" not in start_update.payload
 
