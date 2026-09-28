@@ -12,5 +12,7 @@ certs/cert.pem
 certs/key.pem
 pytest-output.txt
 .debug/
-benchmarks/
+benchmarks/*
+!benchmarks/benchmark_chance_events.py
 .env
+

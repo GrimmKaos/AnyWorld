@@ -240,6 +240,47 @@ Other players connect to `https://<server-IP>:4141/` using the server's LAN addr
 address for internet play. Allow the configured TCP port through the firewall; internet play may
 also require router port forwarding. Remove temporary forwarding when the session ends.
 
+### Benchmarking local-model instruction following
+
+The chance-event benchmark is an opt-in live-model test. It exercises the configured compatible
+backend with 20 scenarios and 40 action trials: 16 conditional rules each receive one triggering
+and one non-triggering action, while four per-round rules receive two ordinary actions. All rules
+use `100%`, so the score measures whether the model identifies when the event applies rather than
+whether a random roll happened to succeed. The benchmark also prints the generated responses for
+manual review, but excludes usage, token, retry, and timing diagnostics from its result records.
+
+Start the selected local model server and verify the `llm.endpoint` in `config.yaml` points to its
+OpenAI-compatible API. Load one model at a time, keeping sampling and context settings fixed when
+comparing models. From the repository root, run the benchmark without starting the game server:
+
+Linux or macOS:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python -B benchmarks/benchmark_chance_events.py \
+  --output benchmarks/chance-events-<model-name>.json
+```
+
+Windows PowerShell:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE = "1"
+.\venv\Scripts\python.exe -B benchmarks\benchmark_chance_events.py `
+  --output benchmarks\chance-events-<model-name>.json
+```
+
+Use a different output filename for every model. The console ends with overall, conditional, and
+per-round success rates, for example `overall=35/40 (87.5%)`. The JSON report contains the same
+summary plus each event description, action, expected result, detected/occurred flags, pass/fail
+status, and generated response. A conditional trial passes when its triggering action produces
+the event and its non-triggering action does not; both trials for a per-round rule must produce
+the event. A failed model request is recorded as a failed trial so one backend error does not
+discard the rest of the run.
+
+The report may contain private chance-rule effects and model output. Keep it local and do not use
+it as a player-facing transcript. The benchmark script is the one tracked file under the otherwise
+ignored `benchmarks/` directory; generated JSON reports and the other benchmark scripts remain
+ignored.
+
 ### AI model recommendation
 
 During development, Gemma 4 26B A4B with a 128k context was used as the DM AI.
