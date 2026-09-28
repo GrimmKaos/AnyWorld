@@ -273,7 +273,7 @@ Linux or macOS:
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 python -B benchmarks/benchmark_chance_events.py \
-  --output benchmarks/chance-events-<model-name>.json
+  --output benchmarks/model-bench-<model-name>.json
 ```
 
 Windows PowerShell:
@@ -281,7 +281,7 @@ Windows PowerShell:
 ```powershell
 $env:PYTHONDONTWRITEBYTECODE = "1"
 .\venv\Scripts\python.exe -B benchmarks\benchmark_chance_events.py `
-  --output benchmarks\chance-events-<model-name>.json
+  --output benchmarks\model-bench-<model-name>.json
 ```
 
 Use a different output filename for every model. The console ends with overall, conditional, and
@@ -303,6 +303,15 @@ ignored.
 During development, Gemma 4 26B A4B with a 128k context was used as the DM AI.
 This is a record of the project's setup, not a minimum requirement or a guarantee of story quality.
 Smaller context limits require more frequent summaries; memory checks cannot guarantee perfect recall.
+
+The model I can definitely recommend is:
+[mradermacher/gemma-4-19B-A4B-it-The-DECKARD-Thinking-i1-GGUF](https://huggingface.co/mradermacher/gemma-4-19B-A4B-it-The-DECKARD-Thinking-i1-GGUF).
+
+With the below settings, the model proved to be a strong LLM for acting as the game's AI DM.
+Its size makes it also a good choice for VRAM-low setups.
+
+Another recommended model, will also work great with the below settings:
+[EZForever/gemma-4-26B-A4B-it-qat-uncensored-heretic-UDmerge-GGUF](https://huggingface.co/EZForever/gemma-4-26B-A4B-it-qat-uncensored-heretic-UDmerge-GGUF).
 
 **These sampling settings provided a more than adequate game experience with a Q4 quantized Gemma 4:**
 

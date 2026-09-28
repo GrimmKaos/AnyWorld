@@ -115,3 +115,28 @@ Inspired by **AI Dungeon**, especially its earlier free web version, **AI Dungeo
 
 Alibaba Cloud's Qwen 3.8 27b and OpenAI's GPT-5.6 Luna and GPT-6 Astra models
 assisted in the development of this app.
+
+## Model benchmarking
+
+the new benchmarks/benchmark_chance_events.py can be used to benchmark your local model's ability
+to follow instructions, and to test out different model settings.
+It creates a set of trigger-events and runs a benchmark on whether the AI properly responded to
+the caused trigger-event or not. This is not a direct test for whether the model is fit to be a DM
+for this game, but a lot of failures means the model is very unlikely to be suitable.
+Also, the json logged responses can give an indication of the model's general
+intelligence and creativity.
+
+Development showed that the proper configurations (temp, top-p, top-k, presence-penalty and repeat-penalty and others)
+are a massive influence on how well the model passes the benchmark. **With good model settings,
+the benchmark pass rate for a model climbed from 62% to a consistent 100% over several runs.**
+
+Make sure to find out what are the proper settings for the model you plan to use.
+
+Read a more comprehensive description in README.md
+
+### Running benchmarks
+
+```bash
+# Activate venv first if not already done.
+python -B benchmarks/benchmark_chance_events.py --output benchmarks/model-bench-<model-name>.json
+```
