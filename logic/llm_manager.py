@@ -62,6 +62,16 @@ class LLMBackendUnavailableError(LLMResolutionError):
     """The provider connection failed before a usable model response arrived."""
 
 
+@lru_cache(maxsize=64)
+def _non_percentage_guidance_lines(guidance: str) -> tuple[str, ...]:
+    """Return reusable private guidance lines that can identify hidden checks."""
+    return tuple(
+        line.strip()
+        for line in guidance.splitlines()
+        if len(line.strip()) >= 12 and not re.search(r"%|\bpercent\b", line, re.IGNORECASE)
+    )
+
+
 @lru_cache(maxsize=32)
 def participant_schema(
     base: type[BaseModel],
@@ -416,12 +426,7 @@ class LLMContextManager:
                 has_non_percentage_private_guidance(self.private_guidance),
                 conditional_chance_rule_ids(self.private_guidance),
                 settings.llm.provider,
-                private_sources=tuple(
-                    line.strip()
-                    for line in self.private_guidance.splitlines()
-                    if len(line.strip()) >= 12
-                    and not re.search(r"%|\bpercent\b", line, re.IGNORECASE)
-                ),
+                private_sources=_non_percentage_guidance_lines(self.private_guidance),
             ),
             remember=False,
             kind="dice",
@@ -706,11 +711,7 @@ class LLMContextManager:
             has_non_percentage_private_guidance(self.private_guidance),
             conditional_chance_rule_ids(self.private_guidance),
             settings.llm.provider,
-            private_sources=tuple(
-                line.strip()
-                for line in self.private_guidance.splitlines()
-                if len(line.strip()) >= 12 and not re.search(r"%|\bpercent\b", line, re.IGNORECASE)
-            ),
+            private_sources=_non_percentage_guidance_lines(self.private_guidance),
         )
         prompts = (
             (
@@ -913,8 +914,7 @@ class LLMContextManager:
         """Keep a required roll public when its private cause is missing or invalid."""
         valid_sources = {
             " ".join(line.casefold().split()): line.strip()
-            for line in self.private_guidance.splitlines()
-            if len(line.strip()) >= 12 and not re.search(r"%|\bpercent\b", line, re.IGNORECASE)
+            for line in _non_percentage_guidance_lines(self.private_guidance)
         }
         hidden = []
         sources = {}
