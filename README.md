@@ -120,11 +120,9 @@ assisted in the development of this app.
 
 the new benchmarks/benchmark_chance_events.py can be used to benchmark your local model's ability
 to follow instructions, and to test out different model settings.
-It creates a set of trigger-events and runs a benchmark on whether the AI properly responded to
-the caused trigger-event or not. This is not a direct test for whether the model is fit to be a DM
-for this game, but a lot of failures means the model is very unlikely to be suitable.
-Also, the json logged responses can give an indication of the model's general
-intelligence and creativity.
+It creates a set of trigger-events and runs a benchmark on whether the AI properly responded to the caused trigger-event or not.
+This is not a direct test for whether the model is fit to be a DM for this game, but a lot of failures means the model is very unlikely to be suitable.
+Also, the json logged responses can give an indication of the model's general intelligence and creativity.
 
 Development showed that the proper configurations (temp, top-p, top-k, presence-penalty and repeat-penalty and others)
 are a massive influence on how well the model passes the benchmark. **With good model settings,
@@ -132,7 +130,7 @@ the benchmark pass rate for a model climbed from 62% to a consistent 100% over s
 
 Make sure to find out what are the proper settings for the model you plan to use.
 
-Read a more comprehensive description in README.md
+Read a more comprehensive description and a couple of model recommendations in README.md
 
 ### Running benchmarks
 
