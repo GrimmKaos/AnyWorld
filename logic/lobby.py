@@ -239,6 +239,11 @@ class LobbyMixin:
                     return
                 self.current_scenario_state = resolution.global_narrative
                 self.opening_scenario = resolution.global_narrative
+                # The opening establishes in-world presence. Earlier transport
+                # reconnects are not departures or returns within the story.
+                for player in self.players.values():
+                    player.departure_pending = not player.is_connected
+                    player.return_pending = False
                 self.state = GameState.ACTIVE_TURN
                 directive = self._next_turn_locked()
             payload = resolution.model_dump()

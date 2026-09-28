@@ -126,6 +126,76 @@ async def submit_round(engine):
     await engine.process_payload("player", payload("action", action="Watch Mira"))
 
 
+@pytest.mark.parametrize("reconnect_phase", [None, "scenario", "lobby", "opening"])
+def test_pregame_reconnect_does_not_annotate_normal_actions(tmp_path, reconnect_phase):
+    """The opening establishes presence, regardless of earlier transport reconnects."""
+
+    async def run():
+        resolver = ControlledResolver()
+        engine = GameEngine(FakeSender(), resolver)
+        engine.transcript = GameTranscript(tmp_path)
+        await auth(engine, "host")
+
+        async def reconnect_at(phase):
+            if reconnect_phase == phase:
+                await engine.handle_disconnect("host")
+                await auth(engine, "host")
+
+        await reconnect_at("scenario")
+        await engine.process_payload("host", payload("scenario_init", scenario="A quiet room"))
+        await engine.wait_for_inference()
+        await auth(engine, "player")
+        await reconnect_at("lobby")
+        resolver.block_phase = "start"
+        await engine.process_payload("host", payload("start_game"))
+        await resolver.entered.wait()
+        await reconnect_at("opening")
+        resolver.release.set()
+        await engine.wait_for_inference()
+        try:
+            for _ in range(2):
+                await submit_round(engine)
+                await engine.wait_for_inference()
+                assert resolver.received_actions[-1] == {
+                    "Host": "Open gate",
+                    "Player": "Watch Mira",
+                }
+            assert not engine.players["host"].departure_pending
+            assert not engine.players["host"].return_pending
+        finally:
+            await engine.shutdown()
+
+    asyncio.run(run())
+
+
+def test_player_still_absent_at_opening_keeps_departure_and_later_return(tmp_path):
+    """Resetting pregame transitions must not hide a player who remains absent."""
+
+    async def run():
+        engine, _, resolver = await setup(tmp_path, phase="start")
+        await resolver.entered.wait()
+        await engine.handle_disconnect("player")
+        resolver.release.set()
+        await engine.wait_for_inference()
+        try:
+            await engine.process_payload("host", payload("action", action="Wait"))
+            await engine.wait_for_inference()
+            assert resolver.received_actions[-1]["Host"] == "Wait"
+            assert "in-world departure" in resolver.received_actions[-1]["Player"]
+            await engine.process_payload("host", payload("action", action="Wait again"))
+            await engine.wait_for_inference()
+            assert resolver.received_actions[-1] == {"Host": "Wait again"}
+            await auth(engine, "player")
+            await submit_round(engine)
+            await engine.wait_for_inference()
+            assert "in-world return" in resolver.received_actions[-1]["Player"]
+            assert "in-world departure" not in resolver.received_actions[-1]["Player"]
+        finally:
+            await engine.shutdown()
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("failure", ["timeout", "error"])
 def test_usage_failure_cannot_pause_a_committed_round(tmp_path, monkeypatch, failure):
     """Optional telemetry fails independently after turn delivery and final accounting."""
