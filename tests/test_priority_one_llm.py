@@ -10,7 +10,6 @@ import pytest
 from core.config import settings
 from core.schemas import (
     AuditVerdict,
-    ConditionalCheckAudit,
     ContextSummary,
     DicePlan,
     RoundResolution,
@@ -44,8 +43,6 @@ class FakeClient:
             SummaryAudit,
         ):
             result = kwargs["response_format"](preserved=True, corrections=[])
-        elif isinstance(result, DicePlan) and kwargs["response_format"] is ConditionalCheckAudit:
-            result = ConditionalCheckAudit(missing_occurrences=[], invalid_occurrences=[])
         if isinstance(result, Exception):
             raise result
         if result is None:
@@ -60,8 +57,6 @@ class FakeClient:
                 result = ScenarioTitle(title="The gate")
             elif schema in (AuditVerdict, SummaryAudit):
                 result = schema(preserved=True, corrections=[])
-            elif schema is ConditionalCheckAudit:
-                result = ConditionalCheckAudit(missing_occurrences=[], invalid_occurrences=[])
             elif issubclass(schema, ContextSummary):
                 result = memory()
             else:
