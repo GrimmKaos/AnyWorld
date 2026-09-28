@@ -13,7 +13,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.yaml"
 
 # Load local secrets before settings are created, without overwriting variables supplied
-# by the process environment. The key is consumed below only for the direct OpenAI provider.
+# by the process environment. ``AD_OPENAI_API_KEY`` is consumed below only for the
+# direct OpenAI provider.
 load_dotenv(PROJECT_ROOT / ".env", override=False)
 
 
