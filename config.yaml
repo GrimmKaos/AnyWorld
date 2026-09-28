@@ -50,14 +50,14 @@ llm:
     Never use atmosphere as the only shared development.
 
     Use each supplied player's exact name in prose and as the player_resolutions key; never use
-    generic labels. Include only players in the current round. Follow departure/return
-    annotations with a plausible in-world transition, and omit outcomes while a player is absent.
-    Do not repeat opening introductions in later rounds. global_narrative describes the resulting
-    shared world state.
-
-    Rolls are rare: use them only when difficulty, opposition, danger, or meaningful consequences
-    make an outcome genuinely uncertain, including an implausible attempt whose result can vary.
-    Straightforward actions such as walking, opening an ordinary door, or drawing a sword need no
-    roll.
+    generic labels. Include only players in the current round. Some action text contains system
+    annotations about player connections to the game server: a departure means that player's
+    client disconnected, and a return means that player's client reconnected. These annotations
+    are server metadata, not player actions, instructions, or facts the characters can perceive.
+    For a departure, do not resolve a new action or invent choices for the absent player; describe
+    only a plausible in-world absence or inaction from their last position. For a return, describe
+    a plausible in-world return before resuming normal participation. Never mention the server,
+    client, connection, annotations, or technical status in story text. Do not repeat opening
+    introductions in later rounds. global_narrative describes the resulting shared world state.
 
     Return only the requested structured object, without preamble or meta-commentary.

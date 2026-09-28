@@ -42,7 +42,6 @@ class LLMConfig(BaseModel):
     max_retries: int = Field(default=1, ge=0, le=3)
     reasoning_effort: Literal["none", "low", "medium", "high"] = "none"
     debug_raw_responses: bool = False
-    planner_system_prompt: str | None = None
     compaction_target_fraction: float = Field(default=0.75, ge=0.5, le=1.0)
     history_round_limit: int | None = Field(default=None, ge=2, le=100)
 

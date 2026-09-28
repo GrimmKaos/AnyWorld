@@ -221,8 +221,8 @@ class LLMContextManager:
     def _fixed_messages(self, kind: str = "round") -> list[dict[str, str]]:
         """Return the immutable prefix messages for every request."""
         system = self.system_prompt
-        if kind == "dice" and settings.llm.planner_system_prompt:
-            system = {"role": "system", "content": settings.llm.planner_system_prompt}
+        if kind == "dice":
+            system = {"role": "system", "content": prompts.DICE_PLANNER_SYSTEM_PROMPT}
         return [
             system,
             *([self.genesis_state] if self.genesis_state else []),

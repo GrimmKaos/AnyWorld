@@ -97,7 +97,7 @@ this guard cannot prove arbitrary paraphrases secret-free. No application cache 
 
 Optional llm settings: initial_output_tokens (1024), round_output_tokens (2048), dice_output_tokens
 (512), summary_output_tokens (1024), token_safety_margin (256), request_timeout_seconds (120.0),
-max_retries (1), reasoning_effort (none/low/medium/high), planner_system_prompt (null),
+max_retries (1), reasoning_effort (none/low/medium/high),
 debug_raw_responses (false),
 compaction_target_fraction (0.75), history_round_limit (null). Title generation caps output at
 min(128, initial_output_tokens). Server admission settings: max_pending_connections (32),
