@@ -105,6 +105,8 @@ def test_raw_logging_precedes_sdk_parsing_and_does_not_change_requests(
     assert len(files) == int(enabled)
     if enabled:
         record = json.loads(files[0].read_text(encoding="utf-8"))
+        assert "-round-" in files[0].name
+        assert record["request_type"] == "round"
         assert record["body"] == body
         assert record["request"]["method"] == "POST"
         assert record["request"]["url"] == "/v1/chat/completions"
@@ -116,6 +118,7 @@ def test_raw_logging_precedes_sdk_parsing_and_does_not_change_requests(
         )
         assert set(record) == {
             "timestamp",
+            "request_type",
             "status_code",
             "request",
             "body",
@@ -159,7 +162,9 @@ def test_request_is_logged_even_when_no_response_arrives(tmp_path):
     asyncio.run(run())
     files = list((tmp_path / ".debug" / "llm").glob("*.json"))
     assert len(files) == 1
+    assert "-unknown-" in files[0].name
     record = json.loads(files[0].read_text(encoding="utf-8"))
     assert record["status_code"] is None
+    assert record["request_type"] == "unknown"
     assert record["body"] is None
     assert record["request"]["body"] == request.content.decode("utf-8")

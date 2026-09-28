@@ -27,7 +27,7 @@ from logic.dice import (
     normalize_chance_rule_decisions,
 )
 from logic.presentation import name_resolution
-from logic.debug_log import RawResponseLogger
+from logic.debug_log import RawResponseLogger, request_type_context
 from logic.llm import auditing, prompts
 from logic.llm.errors import (
     LLMBackendUnavailableError,
@@ -568,14 +568,15 @@ class LLMContextManager:
         effort = self.budget.reasoning_effort(kind)
         template_options = self.budget.template_options(kind)
         try:
-            response = await self.client.beta.chat.completions.parse(
-                model=settings.llm.model_name,
-                messages=messages,
-                response_format=schema,
-                reasoning_effort=effort,
-                **({"extra_body": template_options} if template_options else {}),
-                **{cap_key: self.budget.request_output_limit(kind)},
-            )
+            with request_type_context(kind):
+                response = await self.client.beta.chat.completions.parse(
+                    model=settings.llm.model_name,
+                    messages=messages,
+                    response_format=schema,
+                    reasoning_effort=effort,
+                    **({"extra_body": template_options} if template_options else {}),
+                    **{cap_key: self.budget.request_output_limit(kind)},
+                )
             choice = response.choices[0]
             if getattr(choice, "finish_reason", None) == "length":
                 raise LLMOutputTruncatedError(

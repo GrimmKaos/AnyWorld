@@ -1,15 +1,29 @@
 """Opt-in private diagnostics, captured before SDK parsing or narrative validation."""
 
 import asyncio
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 import json
 import logging
 from pathlib import Path
+import re
 from uuid import uuid4
 
 import httpx
 
 LOGGER = logging.getLogger(__name__)
+_REQUEST_TYPE: ContextVar[str] = ContextVar("anyworld_debug_request_type", default="unknown")
+
+
+@contextmanager
+def request_type_context(kind: str):
+    """Make the current inference request type available to HTTP debug hooks."""
+    token = _REQUEST_TYPE.set(kind)
+    try:
+        yield
+    finally:
+        _REQUEST_TYPE.reset(token)
 
 
 class RawResponseLogger:
@@ -28,7 +42,8 @@ class RawResponseLogger:
         except (httpx.RequestNotRead, RuntimeError):
             body = b""
         timestamp = datetime.now(timezone.utc)
-        filename = f"{timestamp:%Y%m%dT%H%M%S.%fZ}-{uuid4().hex}.json"
+        request_type = re.sub(r"[^a-zA-Z0-9_-]", "_", _REQUEST_TYPE.get()) or "unknown"
+        filename = f"{timestamp:%Y%m%dT%H%M%S.%fZ}-{request_type}-{uuid4().hex}.json"
         request_record = {
             "method": request.method,
             "url": request.url.path,
@@ -36,6 +51,7 @@ class RawResponseLogger:
         }
         record = {
             "timestamp": timestamp.isoformat(),
+            "request_type": request_type,
             "status_code": None,
             "request": request_record,
             "body": None,
@@ -43,6 +59,7 @@ class RawResponseLogger:
         }
         write = asyncio.create_task(asyncio.to_thread(self._write, filename, record))
         request.extensions["anyworld_debug_request"] = request_record
+        request.extensions["anyworld_debug_request_type"] = request_type
         request.extensions["anyworld_debug_filename"] = filename
         request.extensions["anyworld_debug_write"] = write
         try:
@@ -63,13 +80,18 @@ class RawResponseLogger:
         timestamp = datetime.now(timezone.utc)
         record = {
             "timestamp": timestamp.isoformat(),
+            "request_type": response.request.extensions.get(
+                "anyworld_debug_request_type", "unknown"
+            ),
             "status_code": response.status_code,
             "request": response.request.extensions.get("anyworld_debug_request"),
             "body": body.decode("utf-8", errors="replace"),
             "thinking_sequences": self._thinking_sequences(body),
         }
         if not isinstance(filename, str):
-            filename = f"{timestamp:%Y%m%dT%H%M%S.%fZ}-{uuid4().hex}.json"
+            request_type = re.sub(r"[^a-zA-Z0-9_-]", "_", str(record["request_type"])) or "unknown"
+            record["request_type"] = request_type
+            filename = f"{timestamp:%Y%m%dT%H%M%S.%fZ}-{request_type}-{uuid4().hex}.json"
         write = asyncio.create_task(asyncio.to_thread(self._write, filename, record))
         try:
             await asyncio.shield(write)
