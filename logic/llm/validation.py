@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 def check_semantics(result: BaseModel, names: tuple[str, ...] | None) -> None:
-    """Reject incomplete or inconsistent output before remembering it."""
+    """Reject incomplete or inconsistent structured output before accepting it."""
     if isinstance(result, DicePlan):
         if names is not None and set(result.rolls) != set(names):
             raise LLMResolutionError("Invalid dice plan participants.")
@@ -75,7 +75,8 @@ def check_public_output(
     """Reject direct guidance echoes and explicit hidden dice disclosures.
 
     This is a conservative backstop, not a claim to detect every paraphrase of
-    a secret. Prompt instructions still distinguish observable consequences.
+    a secret. Prompt instructions still distinguish observable consequences, and
+    this check runs before the result can enter public events or retained history.
     """
     text = " ".join([result.global_narrative, *result.player_resolutions.values()])
     normalized = " ".join(text.casefold().split())

@@ -94,6 +94,7 @@ class ModuleFormatter(logging.Formatter):
     """Color the rendered text without putting escape codes into shared records."""
 
     def __init__(self, stream: TextIO) -> None:
+        """Initialize capability detection and the stable logger-color palette."""
         super().__init__(LOG_FORMAT, datefmt="%H:%M:%S")
         self.color_depth = _color_depth(stream)
         palette = _module_palette()
@@ -102,6 +103,7 @@ class ModuleFormatter(logging.Formatter):
         self._color_lock = Lock()
 
     def format(self, record: logging.LogRecord) -> str:
+        """Render one record, assigning new logger names a spare color lazily."""
         rendered = super().format(record)
         if not self.color_depth:
             return rendered
@@ -121,6 +123,7 @@ class NonSuccessOnly(logging.Filter):
     """Keep existing suppression of successful HTTP access messages."""
 
     def filter(self, record: logging.LogRecord) -> bool:
+        """Allow non-HTTP records and suppress successful access responses."""
         if record.name not in {"uvicorn.access", "httpx"}:
             return True
         match = _RESPONSE_STATUS.search(record.getMessage())
@@ -131,6 +134,7 @@ class ConsoleHandler(logging.StreamHandler):
     """Detect capabilities on the actual output stream in each process."""
 
     def __init__(self) -> None:
+        """Bind formatting and filtering to the process's actual stderr stream."""
         super().__init__(sys.stderr)
         self.setFormatter(ModuleFormatter(self.stream))
         self.addFilter(NonSuccessOnly())

@@ -102,6 +102,7 @@ def participant_schema(
             }
 
             def strip(node: Any) -> Any:
+                """Recursively remove keywords rejected by OpenAI strict schemas."""
                 if isinstance(node, dict):
                     return {
                         key: (

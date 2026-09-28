@@ -1,5 +1,8 @@
 "use strict";
 
+// Browser client for the authenticated lobby, bounded public journal and chat.
+// Server events are rendered with textContent so narrative data never becomes HTML.
+
 // Storage can be unavailable in privacy modes. Keep the active tab usable in memory.
 function readStored(storageName, key) {
     try {
@@ -362,6 +365,8 @@ function applySnapshot(payload) {
 }
 
 function handleMessage(message) {
+    // Snapshots rebuild the current view after reconnect; live events then update
+    // only the affected bounded log, roster, status or input-control state.
     const { type, payload } = message;
     if (!authenticated && type !== "auth_ok" && type !== "error") {
         return;

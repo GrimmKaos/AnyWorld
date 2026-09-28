@@ -28,7 +28,9 @@ class Parse(Protocol):
         schema: type[BaseModel],
         kind: str,
         repair_attempt: int = 0,
-    ) -> Any: ...
+    ) -> Any:
+        """Parse one bounded request without changing the manager's conversation state."""
+        ...
 
 
 async def classify_hidden_checks(

@@ -22,7 +22,12 @@ USAGE_REFRESH_TIMEOUT_SECONDS = 5.0
 
 
 class GameEngine(LobbyMixin):
-    """One session; state lock is never held over network or filesystem work."""
+    """Coordinate one game session without holding state locks across I/O.
+
+    ``lock`` protects mutable game state.  ``effects_lock`` orders committed
+    broadcasts and transcript writes against shutdown.  Inference tasks carry a
+    generation number so a cancelled or stale job cannot revive an ended session.
+    """
 
     PAYLOAD_HANDLERS = {
         "chat": "_chat",
@@ -49,6 +54,8 @@ class GameEngine(LobbyMixin):
         self.generation = 0
         self.inference_task: asyncio.Task | None = None
         self.round_paused = False
+        # A paused round keeps its original actions and authoritative dice/events so
+        # a host retry can rerun narrative validation without rerolling anything.
         self.pending_resolution: dict | None = None
         self.round_counter = 0
         self.scenario_title: str | None = None
@@ -434,7 +441,12 @@ class GameEngine(LobbyMixin):
                 finish_usage(error)
 
     async def _resolve_round_work(self, epoch: int) -> None:
-        """Run dice planning and resolution, then commit the round outcome."""
+        """Plan authoritative checks, resolve all actions, and commit one round.
+
+        Planning and generation happen outside the state lock.  The final state
+        mutation is guarded by both the generation check and the effects lock;
+        public output is assembled only after private checks have been separated.
+        """
         pending = self.pending_resolution
         assert pending is not None
         actions = pending["actions"]

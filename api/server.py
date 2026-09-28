@@ -35,7 +35,12 @@ class ConnectionManager:
         self._send_locks: dict[WebSocket, asyncio.Lock] = {}
 
     async def connect(self, client_id: str, websocket: WebSocket) -> bool:
-        """Accept a pending socket, closing it if the pending cap is reached."""
+        """Accept a pending socket, closing it if the pending cap is reached.
+
+        ``client_id`` is intentionally unused here: the socket is unauthenticated
+        until the gateway promotes it, so pending connections are tracked by socket
+        identity rather than by a caller-controlled client identifier.
+        """
         del client_id
         if len(self.pending) >= settings.server.max_pending_connections:
             await websocket.close(code=1013, reason="Too many pending connections")

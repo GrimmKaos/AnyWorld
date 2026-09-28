@@ -303,6 +303,7 @@ def prepare_request_prompt(prompt: dict[str, str], is_resolution: bool) -> dict[
 def classify_audit_prompt(
     name: str, source: str, planning_input: dict[str, Any]
 ) -> list[dict[str, str]]:
+    """Build the private audit that validates a cited source for one hidden check."""
     return [
         {
             "role": "system",
@@ -334,6 +335,7 @@ def chance_outcomes_audit_prompt(
     result: RoundResolution,
     events: list[ChanceEventResult],
 ) -> list[dict[str, str]]:
+    """Build the private audit that checks successful chance effects appear in prose."""
     return [
         {
             "role": "system",
@@ -371,6 +373,7 @@ def chance_outcomes_audit_prompt(
 def summary_audit_prompt(
     messages: list[dict[str, str]], summary: ContextSummary
 ) -> list[dict[str, str]]:
+    """Build a fact-preservation audit over a proposed durable-memory checkpoint."""
     return [
         *messages,
         {"role": "assistant", "content": summary.model_dump_json()},

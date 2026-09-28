@@ -22,7 +22,7 @@ class ConfigLoadError(ValueError):
 
 
 class LLMConfig(BaseModel):
-    """OpenAI-compatible inference configuration."""
+    """Inference configuration shared by direct and compatible OpenAI APIs."""
 
     model_config = ConfigDict(strict=True, extra="forbid")
 
@@ -82,7 +82,13 @@ class ServerConfig(BaseModel):
 
 
 class Settings(BaseSettings):
-    """Root settings model and YAML loader."""
+    """Root settings model and the explicit YAML loading path used by the app.
+
+    The model retains Pydantic Settings metadata for the configuration contract,
+    but ``load`` validates the YAML mapping directly rather than invoking the
+    BaseSettings environment-source pipeline.  The supported secret override is
+    the explicit ``OPENAI_API_KEY`` handling in ``load`` below.
+    """
 
     model_config = SettingsConfigDict(
         strict=True,
@@ -96,7 +102,12 @@ class Settings(BaseSettings):
 
     @classmethod
     def load(cls, path: str | Path = DEFAULT_CONFIG_PATH) -> "Settings":
-        """Load and validate settings from a YAML file."""
+        """Load and validate YAML settings, keeping the OpenAI key in memory only.
+
+        When the direct OpenAI provider is selected, ``OPENAI_API_KEY`` replaces the
+        YAML key in the in-memory mapping before validation; it is never written back
+        to the configuration file or included in diagnostics.
+        """
         config_path = Path(path)
         try:
             with config_path.open("r", encoding="utf-8") as config_file:

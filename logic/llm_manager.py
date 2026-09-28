@@ -59,7 +59,14 @@ logger = logging.getLogger(__name__)
 
 
 class LLMContextManager:
-    """Keep immutable genesis, durable memory and recent rounds within a budget."""
+    """Resolve one game's narrative while preserving bounded, private context.
+
+    The manager keeps immutable genesis, optional durable memory, and recent
+    compact input/output pairs.  ``_request`` is the single path for provider
+    calls, schema validation, privacy checks, usage accounting, and history
+    commits; compaction is transactional so failed summaries leave the original
+    context intact.
+    """
 
     def __init__(self, client: AsyncOpenAI | None = None) -> None:
         """Initialize the manager with an optional client and configured context."""
@@ -285,7 +292,12 @@ class LLMContextManager:
         )
 
     def _fixed_messages(self, kind: str = "round") -> list[dict[str, str]]:
-        """Return the immutable prefix messages for every request."""
+        """Return the stable system/genesis/memory prefix for a request kind.
+
+        Dice planning uses its own conservative system policy.  Conditional
+        trigger detection also receives a version of genesis without the raw
+        guidance, because the normalized rule is supplied separately.
+        """
         system = self.system_prompt
         if kind == "dice":
             system = {"role": "system", "content": prompts.DICE_PLANNER_SYSTEM_PROMPT}
@@ -373,7 +385,12 @@ class LLMContextManager:
         opening_names: tuple[str, ...] | None = None,
         history_prompt: dict[str, str] | None = None,
     ) -> Any:
-        """Run a request, optionally compacting history and storing a compact input record."""
+        """Run one bounded request and commit only validated, privacy-safe output.
+
+        The method may compact history before parsing, retries schema failures with
+        repair instructions, performs chance/hidden-check audits, and stores the
+        supplied compact input record only after all checks pass.
+        """
         prompt = prompts.prepare_request_prompt(prompt, issubclass(schema, RoundResolution))
         await self.budget.discover_context_window()
         if include_history:
@@ -893,16 +910,23 @@ class LLMContextManager:
 
     @context_window_size.setter
     def context_window_size(self, value: int) -> None:
+        """Override the budget's context limit for tests or controlled diagnostics."""
         self.budget.context_window_size = value
 
     @property
     def context_window_source(self) -> str:
+        """Describe whether the context limit came from discovery or configuration."""
         return self.budget.context_window_source
 
     @property
     def token_count_method(self) -> str:
+        """Describe the tokenizer or conservative estimate used for the last count."""
         return self.budget.token_count_method
 
     async def discover_context_window(self) -> None:
-        """Discover the backend context window size when available."""
+        """Expose optional backend context discovery for setup and diagnostics.
+
+        Normal request and preflight paths call the budget directly as needed, so
+        discovery failure remains recoverable rather than permanently cached.
+        """
         await self.budget.discover_context_window()

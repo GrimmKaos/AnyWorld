@@ -32,6 +32,12 @@ class TokenBudget:
     """Own tokenizer state and bound every formatted inference request."""
 
     def __init__(self) -> None:
+        """Initialize provider discovery state and bounded local count caches.
+
+        Compatible providers are measured through their chat template and tokenizer
+        when those endpoints respond.  Other paths use the conservative local
+        estimate until a provider-specific tokenizer is known.
+        """
         self._http: httpx.AsyncClient | None = None
         self.context_window_size = settings.llm.context_window_size
         self.context_window_source = "configured fallback"

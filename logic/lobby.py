@@ -21,7 +21,11 @@ CURRENT_OWNER: ContextVar[Callable[[], bool]] = ContextVar("socket_owner", defau
 
 
 class LobbyMixin:
-    """Lobby operations; authentication can atomically activate a transport connection."""
+    """Lobby operations mixed into the engine's single-session state machine.
+
+    The WebSocket layer supplies an ownership callback so a replaced socket can
+    finish its receive loop without mutating the player or turn state.
+    """
 
     async def process_payload(
         self: "GameEngine",
@@ -30,7 +34,7 @@ class LobbyMixin:
         *,
         authorize: Callable[[], bool] = lambda: True,
     ) -> None:
-        """Route a validated client payload to its handler, restoring the turn on error."""
+        """Route a validated post-auth payload and restore a rejected action's turn."""
         token = CURRENT_OWNER.set(authorize)
         try:
             if not authorize():
@@ -60,7 +64,12 @@ class LobbyMixin:
         *,
         activate: Callable[[], None] | None = None,
     ) -> bool:
-        """Authenticate or reconnect a client and activate its transport connection."""
+        """Authenticate or reconnect a client, then atomically activate its socket.
+
+        New players use a password digest bound to their client ID.  Existing
+        players additionally need the reconnect token issued by their first
+        successful authentication.
+        """
         name = clean_text(data.get("name"), "name", 40)
         digest = clean_text(data.get("password_digest"), "password_digest", 64)
         if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
