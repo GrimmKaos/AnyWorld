@@ -17,6 +17,7 @@ from core.schemas import (
     RoundResolution,
 )
 from logic import dice
+from logic.llm.validation import normalize_hidden_roll_sources
 from logic.llm_manager import LLMContextManager, LLMResolutionError, participant_schema
 from test_engine import payload
 from test_priority_one_lifecycle import setup, submit_round
@@ -665,8 +666,9 @@ def test_unsupported_hidden_sources_keep_action_roll_public(source):
     manager = LLMContextManager(FakeClient())
     guidance = "The locked gate conceals a private alarm."
     manager.set_genesis("A gate", guidance + "\n" + RULE)
-    plan = manager._normalize_hidden_roll_sources(
-        DicePlan(rolls={"Host": True}, hidden_rolls=["Host"], hidden_roll_sources={"Host": source})
+    plan = normalize_hidden_roll_sources(
+        DicePlan(rolls={"Host": True}, hidden_rolls=["Host"], hidden_roll_sources={"Host": source}),
+        guidance=manager.private_guidance,
     )
     assert plan.rolls == {"Host": True}
     assert plan.hidden_rolls == [] and plan.hidden_roll_sources == {}
@@ -676,10 +678,11 @@ def test_valid_private_source_keeps_its_check_hidden():
     manager = LLMContextManager(FakeClient())
     guidance = "The locked gate conceals a private alarm."
     manager.set_genesis("A gate", guidance)
-    plan = manager._normalize_hidden_roll_sources(
+    plan = normalize_hidden_roll_sources(
         DicePlan(
             rolls={"Host": True}, hidden_rolls=["Host"], hidden_roll_sources={"Host": guidance}
-        )
+        ),
+        guidance=manager.private_guidance,
     )
     assert plan.hidden_rolls == ["Host"]
 

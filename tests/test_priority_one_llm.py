@@ -142,7 +142,7 @@ def test_every_request_caps_output_and_counts_backend_template(
                 return httpx.Response(200, json={"tokens": list(range(1400))})
             raise AssertionError(request.url)
 
-        manager._http = httpx.AsyncClient(transport=httpx.MockTransport(backend))
+        manager.budget._http = httpx.AsyncClient(transport=httpx.MockTransport(backend))
         await manager._parse([{"role": "user", "content": "Act"}], schema, kind)
         request = client.calls[0]
         assert request["reasoning_effort"] == effort
@@ -224,9 +224,9 @@ def test_context_discovery_recovers_after_backend_outage():
                 return httpx.Response(503)
             return httpx.Response(200, json={"default_generation_settings": {"n_ctx": 128000}})
 
-        manager._http = httpx.AsyncClient(transport=httpx.MockTransport(backend))
+        manager.budget._http = httpx.AsyncClient(transport=httpx.MockTransport(backend))
         await manager.discover_context_window()
-        assert not manager._context_discovered
+        assert not manager.budget._context_discovered
         await manager.discover_context_window()
         assert manager.context_window_size == 128000
         await manager.discover_context_window()
@@ -256,10 +256,10 @@ def test_unknown_backend_uses_utf8_bytes_and_keeps_small_slot_context():
                 )
             return httpx.Response(404)
 
-        manager._http = httpx.AsyncClient(transport=httpx.MockTransport(backend))
+        manager.budget._http = httpx.AsyncClient(transport=httpx.MockTransport(backend))
         await manager.discover_context_window()
         assert manager.context_window_size == 4096
-        assert manager._count_tokens("💎日本語") == len("💎日本語".encode("utf-8"))
+        assert manager.budget.count_tokens("💎日本語") == len("💎日本語".encode("utf-8"))
         with pytest.raises(LLMResolutionError):
             await manager._parse(
                 [{"role": "user", "content": "💎" * 1000}], RoundResolution, "round"

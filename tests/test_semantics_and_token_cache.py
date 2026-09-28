@@ -8,6 +8,8 @@ import pytest
 
 from core.config import settings
 from core.schemas import ContextSummary, DicePlan, RoundResolution, ScenarioTitle, SummaryAudit
+from logic.llm.schemas import schema_text
+from logic.llm.validation import check_semantics
 from logic.llm_manager import LLMContextManager, LLMResolutionError, participant_schema
 from test_priority_one_llm import FakeClient, memory
 
@@ -140,24 +142,24 @@ def test_request_token_cache_is_bounded_and_invalidates_on_input_and_template_ch
                 return httpx.Response(200, json={"prompt": "Formatted request"})
             return httpx.Response(200, json={"tokens": [1, 2, 3]})
 
-        manager._http = httpx.AsyncClient(transport=httpx.MockTransport(backend))
+        manager.budget._http = httpx.AsyncClient(transport=httpx.MockTransport(backend))
         messages = [{"role": "user", "content": "A fact"}]
-        count = await manager._input_tokens(messages, RoundResolution)
-        assert await manager._input_tokens(messages, RoundResolution) == count
+        count = await manager.budget.input_tokens(messages, RoundResolution)
+        assert await manager.budget.input_tokens(messages, RoundResolution) == count
         assert len(calls) == 2
         settings.llm.reasoning_effort = "low"
-        await manager._input_tokens(messages, RoundResolution)
+        await manager.budget.input_tokens(messages, RoundResolution)
         assert len(calls) == 4
         settings.llm.reasoning_effort = "high"
-        await manager._input_tokens(messages, RoundResolution)
+        await manager.budget.input_tokens(messages, RoundResolution)
         assert len(calls) == 6
         for index in range(140):
-            await manager._input_tokens(
+            await manager.budget.input_tokens(
                 [*messages, {"role": "user", "content": str(index)}], RoundResolution
             )
-        assert len(manager._request_counts) == 128
+        assert len(manager.budget._request_counts) == 128
         manager.set_genesis("New session")
-        assert not manager._request_counts
+        assert not manager.budget._request_counts
         await manager.close()
 
     asyncio.run(run())
@@ -168,11 +170,11 @@ def test_message_cache_matches_fresh_counts_and_stays_bounded():
     manager = LLMContextManager(FakeClient())
     history = [{"role": "user", "content": "日本語"}, {"role": "assistant", "content": "A gate"}]
     expected = 32 + sum(len(item["content"].encode("utf-8")) + 32 for item in history)
-    assert manager._context_size(history) == expected
+    assert manager.budget.context_size(history) == expected
     for index in range(600):
-        manager._count_tokens(str(index))
-    assert len(manager._text_counts) == 512
-    assert manager._context_size(history) == expected
+        manager.budget.count_tokens(str(index))
+    assert len(manager.budget._text_counts) == 512
+    assert manager.budget.context_size(history) == expected
 
 
 def test_preflight_measures_each_prompt_and_reuses_schema_tokenization():
@@ -181,7 +183,7 @@ def test_preflight_measures_each_prompt_and_reuses_schema_tokenization():
     async def run():
         settings.llm.provider = "compatible"
         manager = LLMContextManager(FakeClient())
-        manager._context_discovered = True
+        manager.budget._context_discovered = True
         calls = []
 
         def backend(request):
@@ -190,20 +192,20 @@ def test_preflight_measures_each_prompt_and_reuses_schema_tokenization():
                 return httpx.Response(200, json={"prompt": "Formatted request"})
             return httpx.Response(200, json={"tokens": [1, 2, 3]})
 
-        manager._http = httpx.AsyncClient(transport=httpx.MockTransport(backend))
+        manager.budget._http = httpx.AsyncClient(transport=httpx.MockTransport(backend))
         await manager.preflight_round({"Alice": "Look around."}, "A room.")
         assert calls == ["/apply-template", "/tokenize"] * 2
         messages = [{"role": "user", "content": "Different message"}]
         for schema in (RoundResolution, DicePlan, None, RoundResolution):
-            count = await manager._input_tokens(messages, schema)
+            count = await manager.budget.input_tokens(messages, schema)
             expected = 3
             if schema is not None:
-                expected += manager._count_tokens(manager._schema_text(schema)) + 64
+                expected += manager.budget.count_tokens(schema_text(schema)) + 64
             assert count == expected
             assert ("schema allowance" in manager.token_count_method) is (schema is not None)
         assert len(calls) == 6
         settings.llm.model_name = "changed-model"
-        await manager._input_tokens(messages, DicePlan)
+        await manager.budget.input_tokens(messages, DicePlan)
         assert len(calls) == 8
         await manager.close()
 
@@ -225,15 +227,15 @@ def test_failed_tokenization_is_retried_for_another_schema():
                 return httpx.Response(200, json={"prompt": "Formatted request"})
             return httpx.Response(200, json={"tokens": [1, 2]})
 
-        manager._http = httpx.AsyncClient(transport=httpx.MockTransport(backend))
+        manager.budget._http = httpx.AsyncClient(transport=httpx.MockTransport(backend))
         messages = [{"role": "user", "content": "A fact"}]
-        await manager._input_tokens(messages, RoundResolution)
+        await manager.budget.input_tokens(messages, RoundResolution)
         assert manager.token_count_method == "conservative UTF-8 estimate"
-        assert not manager._request_counts
+        assert not manager.budget._request_counts
         available = True
-        await manager._input_tokens(messages, DicePlan)
+        await manager.budget.input_tokens(messages, DicePlan)
         assert manager.token_count_method == "backend template/tokenizer + schema allowance"
-        assert await manager._input_tokens(messages, None) == 2
+        assert await manager.budget.input_tokens(messages, None) == 2
         await manager.close()
 
     asyncio.run(run())
@@ -369,7 +371,7 @@ def test_plain_prose_comparisons_and_in_world_inaction_remain_valid():
         global_narrative="The display reads 2 < 3 and 5 > 4.",
         player_resolutions={"Arxs": "Arxs waits beside a disconnected cable."},
     )
-    LLMContextManager._check_semantics(result, ("Arxs",))
+    check_semantics(result, ("Arxs",))
 
 
 @pytest.mark.parametrize(
@@ -450,7 +452,7 @@ def test_boundary_guard_preserves_valid_prose(outcome):
     result = RoundResolution(
         global_narrative="The cabin is quiet.", player_resolutions={"Arxs": outcome}
     )
-    LLMContextManager._check_semantics(result, ("Arxs",))
+    check_semantics(result, ("Arxs",))
     assert result.player_resolutions["Arxs"] == outcome
 
 

@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable
 from core.config import settings
 from core.schemas import ServerEvent
 from logic.dice import roll_chance, roll_d100, validate_chance_events
-from logic.llm_manager import LLMBackendUnavailableError, LLMResolutionError
+from logic.llm.errors import LLMBackendUnavailableError, LLMResolutionError
 from logic.lobby import CURRENT_OWNER, LobbyMixin
 from logic.models import EventSender, GameState, Player, ResolutionManager
 from logic.presentation import name_resolution

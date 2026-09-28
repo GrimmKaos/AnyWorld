@@ -190,7 +190,7 @@ def test_retained_usage_uses_backend_tokens_and_invalidates_stale_measurements()
                 return httpx.Response(200, json={"prompt": "Rendered retained messages"})
             return httpx.Response(200, json={"tokens": [1] * 123})
 
-        manager._http = httpx.AsyncClient(transport=httpx.MockTransport(backend))
+        manager.budget._http = httpx.AsyncClient(transport=httpx.MockTransport(backend))
         manager.set_genesis("A long scenario. " * 1000)
         await manager.discover_context_window()
         await manager.refresh_usage()
@@ -218,7 +218,7 @@ def test_retained_usage_fallback_is_labelled_and_not_clamped():
     async def run():
         settings.llm.provider = "compatible"
         manager = LLMContextManager(FakeClient())
-        manager._http = httpx.AsyncClient(
+        manager.budget._http = httpx.AsyncClient(
             transport=httpx.MockTransport(lambda request: httpx.Response(404))
         )
         manager.set_genesis("x" * 10000)
