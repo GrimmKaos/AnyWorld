@@ -1,23 +1,12 @@
 """Cached response schemas constrained to the current participants."""
 
 import json
-import re
 from functools import lru_cache
 from typing import Any
 
 from pydantic import BaseModel, Field, create_model
 
 from core.schemas import ChanceEvent, ChanceRuleDecision, ContextSummary, DicePlan, RoundResolution
-
-
-@lru_cache(maxsize=64)
-def _non_percentage_guidance_lines(guidance: str) -> tuple[str, ...]:
-    """Return reusable private guidance lines that can identify hidden checks."""
-    return tuple(
-        line.strip()
-        for line in guidance.splitlines()
-        if len(line.strip()) >= 12 and not re.search(r"%|\bpercent\b", line, re.IGNORECASE)
-    )
 
 
 @lru_cache(maxsize=32)

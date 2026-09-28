@@ -8,7 +8,7 @@ import pytest
 
 from core.config import settings
 from core.schemas import ContextSummary, DicePlan, RoundResolution, ScenarioTitle, SummaryAudit
-from logic.llm.schemas import schema_text
+from logic.llm.response_schemas import schema_text
 from logic.llm.validation import check_semantics
 from logic.llm_manager import LLMContextManager, LLMResolutionError, participant_schema
 from test_priority_one_llm import FakeClient, memory

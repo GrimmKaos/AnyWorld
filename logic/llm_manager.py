@@ -23,13 +23,14 @@ from logic.dice import (
     chance_events_from_decisions,
     conditional_chance_rule_ids,
     has_non_percentage_private_guidance,
+    non_percentage_guidance_lines,
     normalize_chance_rule_decisions,
 )
 from logic.presentation import name_resolution
 from logic.debug_log import RawResponseLogger
 from logic.llm import auditing, prompts
 from logic.llm.errors import LLMBackendUnavailableError, LLMResolutionError
-from logic.llm.schemas import _non_percentage_guidance_lines, participant_schema
+from logic.llm.response_schemas import participant_schema
 from logic.llm.tokenization import TokenBudget
 from logic.llm.validation import check_semantics, check_public_output, normalize_hidden_roll_sources
 
@@ -171,7 +172,7 @@ class LLMContextManager:
                 has_non_percentage_private_guidance(self.private_guidance),
                 conditional_chance_rule_ids(self.private_guidance),
                 settings.llm.provider,
-                private_sources=_non_percentage_guidance_lines(self.private_guidance),
+                private_sources=non_percentage_guidance_lines(self.private_guidance),
             ),
             remember=False,
             kind="dice",
@@ -240,7 +241,7 @@ class LLMContextManager:
             has_non_percentage_private_guidance(self.private_guidance),
             conditional_chance_rule_ids(self.private_guidance),
             settings.llm.provider,
-            private_sources=_non_percentage_guidance_lines(self.private_guidance),
+            private_sources=non_percentage_guidance_lines(self.private_guidance),
         )
         requests = (
             (

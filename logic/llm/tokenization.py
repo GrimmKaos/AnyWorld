@@ -11,7 +11,7 @@ import tiktoken
 from pydantic import BaseModel
 
 from core.config import settings
-from .schemas import schema_text
+from .response_schemas import schema_text
 
 # Both providers count hidden reasoning within the completion cap.
 _THINKING_OUTPUT_BUDGETS = {"none": 0, "low": 2_048, "medium": 4_096, "high": 8_192}

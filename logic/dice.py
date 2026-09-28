@@ -2,6 +2,7 @@
 
 import secrets
 import re
+from functools import lru_cache
 
 from core.schemas import ChanceEvent, ChanceEventResult, ChanceRuleDecision
 
@@ -69,6 +70,16 @@ def conditional_chance_rule_ids(guidance: str) -> tuple[str, ...]:
         rule_id
         for rule_id, (instruction, _) in private_chance_rules(guidance).items()
         if not _is_per_round_rule(instruction) and _has_conditional_trigger(instruction)
+    )
+
+
+@lru_cache(maxsize=64)
+def non_percentage_guidance_lines(guidance: str) -> tuple[str, ...]:
+    """Return reusable private guidance lines that can identify hidden checks."""
+    return tuple(
+        line.strip()
+        for line in guidance.splitlines()
+        if len(line.strip()) >= 12 and not re.search(r"%|\bpercent\b", line, re.IGNORECASE)
     )
 
 

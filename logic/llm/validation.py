@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from core.schemas import ContextSummary, DicePlan, RoundResolution
 from .errors import LLMResolutionError
-from .schemas import _non_percentage_guidance_lines
+from logic.dice import non_percentage_guidance_lines
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +99,7 @@ def normalize_hidden_roll_sources(plan: DicePlan, guidance: str) -> DicePlan:
     """Keep a required roll public when its private cause is missing or invalid."""
     valid_sources = {
         " ".join(line.casefold().split()): line.strip()
-        for line in _non_percentage_guidance_lines(guidance)
+        for line in non_percentage_guidance_lines(guidance)
     }
     hidden = []
     sources = {}
