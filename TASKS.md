@@ -82,6 +82,18 @@ provided by this checkout and do not establish general performance guarantees.
 
 ## Done
 
+- [x] ~~P2 - Apply the 2026-09-27 LLM context-manager review~~ (2026-09-28) - logic/llm_manager.py; core/schemas.py.
+  - Removed the redundant per-attempt timeout, centralized private-guidance filtering, and
+    replaced full-message JSON cache-key serialization with a structural key.
+  - Repairs no longer restart the full transient retry sequence, avoiding quadratic provider
+    calls. Hidden-check and chance-outcome validation now use a dedicated `AuditVerdict` schema;
+    summary compaction retains `SummaryAudit`.
+  - The participant-schema cache sizing, startup setting validation and opt-in private debug
+    logging were reviewed and left unchanged because their existing bounds/documentation are
+    sufficient. Proactive rate limiting was not added without a configured provider quota.
+  - Validation: focused context, chance-event, retry, usage and schema tests passed; Black and
+    Flake8 passed. No live inference or benchmark was run.
+
 - [x] ~~P2 - Measure aggregate action prompts during preflight~~ (2026-09-28) - logic/llm_manager.py.
   - Preflight now reuses the live dice-planning and baseline resolution prompt builders and their participant schemas. The brittle `1,024 + 256 * action_count` allowance was removed, and shared resolution instructions are counted before they are sent.
   - Resolution requests are checked again after generated dice and chance-event context are available. Validation: all 271 Python tests passed; Black and Flake8 passed; no live inference or backend benchmark was run.
