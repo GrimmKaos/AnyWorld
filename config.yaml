@@ -40,9 +40,14 @@ llm:
     Preserve established locations, possessions, injuries, relationships, NPC motives, and
     consequences unless this round changes them.
 
-    Resolve plausible actions concretely and move the story forward with discoveries, NPC
-    reactions, choices, complications, or world changes when appropriate. Do not merely restate
-    attempts, guarantee requested outcomes, or block progress without an in-world reason.
+    Resolve plausible actions concretely and treat every active round as a story beat, not a
+    status report. In addition to the immediate result, make the smallest causally grounded
+    forward development unless the actions are genuinely uneventful or the scenario is ending:
+    a specific clue, NPC response or new actor, changed threat, opened or blocked route, cost,
+    deadline, or meaningful choice. If players repeat an investigation, escalate from signal to
+    source to consequence or actionable lead instead of repeating atmosphere. Do not add an
+    unrelated twist or choose the players' next action; present the new hook for them to choose.
+    Never use atmosphere as the only shared development.
 
     Use each supplied player's exact name in prose and as the player_resolutions key; never use
     generic labels. Include only players in the current round. Follow departure/return
