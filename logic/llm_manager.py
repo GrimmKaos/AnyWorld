@@ -1282,22 +1282,15 @@ class LLMContextManager:
         cap_key = "max_tokens" if settings.llm.provider == "compatible" else "max_completion_tokens"
         effort = self._reasoning_effort(kind)
         template_options = self._template_options(kind)
-        retry_backoff = sum(
-            min(0.5 * 2**attempt, 8.0) for attempt in range(settings.llm.max_retries)
-        )
-        overall_timeout = (
-            settings.llm.request_timeout_seconds * (settings.llm.max_retries + 1) + retry_backoff
-        )
         try:
-            async with asyncio.timeout(overall_timeout):
-                response = await self.client.beta.chat.completions.parse(
-                    model=settings.llm.model_name,
-                    messages=messages,
-                    response_format=schema,
-                    reasoning_effort=effort,
-                    **({"extra_body": template_options} if template_options else {}),
-                    **{cap_key: self._request_output_limit(kind)},
-                )
+            response = await self.client.beta.chat.completions.parse(
+                model=settings.llm.model_name,
+                messages=messages,
+                response_format=schema,
+                reasoning_effort=effort,
+                **({"extra_body": template_options} if template_options else {}),
+                **{cap_key: self._request_output_limit(kind)},
+            )
             choice = response.choices[0]
             if getattr(choice, "finish_reason", None) == "length":
                 raise LLMResolutionError(
