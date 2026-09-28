@@ -4,6 +4,8 @@ import asyncio
 import hashlib
 from pathlib import Path
 
+import pytest
+
 from core.config import settings
 from core.schemas import ClientPayload, DicePlan, RoundResolution, ServerEvent
 from logic.engine import GameEngine, GameState, IDLE_ACTION
@@ -80,6 +82,24 @@ def payload(event_type: str, **data: object) -> ClientPayload:
     return ClientPayload.model_validate({"event_type": event_type, "data": data})
 
 
+async def authenticate(
+    engine: GameEngine,
+    client_id: str,
+    *,
+    name: str,
+    password: str,
+    reconnect_token: str | None = None,
+) -> None:
+    """Authenticate directly through the lobby API used by the socket gateway."""
+    auth_payload = payload(
+        "auth",
+        name=name,
+        password_digest=password_digest(password, client_id),
+        reconnect_token=reconnect_token,
+    )
+    await engine._authenticate(client_id, auth_payload.data)
+
+
 async def build_started_game(tmp_path: Path) -> tuple[GameEngine, FakeSender, FakeResolver]:
     """Build an engine with a started game."""
     sender = FakeSender()
@@ -87,25 +107,21 @@ async def build_started_game(tmp_path: Path) -> tuple[GameEngine, FakeSender, Fa
     engine = GameEngine(sender, resolver)
     engine.transcript = GameTranscript(tmp_path / "logs")
 
-    await engine.process_payload(
+    await authenticate(
+        engine,
         "host",
-        payload(
-            "auth",
-            name="Host",
-            password_digest=password_digest(settings.server.host_password, "host"),
-        ),
+        name="Host",
+        password=settings.server.host_password,
     )
     await engine.process_payload(
         "host", payload("scenario_init", scenario="A gate blocks the road.")
     )
     await engine.wait_for_inference()
-    await engine.process_payload(
+    await authenticate(
+        engine,
         "player",
-        payload(
-            "auth",
-            name="Player",
-            password_digest=password_digest(settings.server.player_password, "player"),
-        ),
+        name="Player",
+        password=settings.server.player_password,
     )
     await engine.process_payload("host", payload("start_game"))
     await engine.wait_for_inference()
@@ -160,13 +176,11 @@ def test_scenario_title_is_generated_before_game_start(tmp_path: Path) -> None:
         engine = GameEngine(sender, resolver)
         engine.transcript = GameTranscript(tmp_path / "logs")
 
-        await engine.process_payload(
+        await authenticate(
+            engine,
             "host",
-            payload(
-                "auth",
-                name="Host",
-                password_digest=password_digest(settings.server.host_password, "host"),
-            ),
+            name="Host",
+            password=settings.server.host_password,
         )
         await engine.process_payload(
             "host", payload("scenario_init", scenario="A gate blocks the road.")
@@ -201,13 +215,11 @@ def test_scenario_uses_one_separate_chance_event_and_freeform_guidance(
         engine = GameEngine(sender, resolver)
         engine.transcript = GameTranscript(tmp_path / "logs")
 
-        await engine.process_payload(
+        await authenticate(
+            engine,
             "host",
-            payload(
-                "auth",
-                name="Host",
-                password_digest=password_digest(settings.server.host_password, "host"),
-            ),
+            name="Host",
+            password=settings.server.host_password,
         )
         await engine.process_payload(
             "host",
@@ -235,13 +247,11 @@ def test_scenario_rejects_percentage_events_in_freeform_guidance(tmp_path: Path)
         sender = FakeSender()
         engine = GameEngine(sender, FakeResolver())
         engine.transcript = GameTranscript(tmp_path / "logs")
-        await engine.process_payload(
+        await authenticate(
+            engine,
             "host",
-            payload(
-                "auth",
-                name="Host",
-                password_digest=password_digest(settings.server.host_password, "host"),
-            ),
+            name="Host",
+            password=settings.server.host_password,
         )
         await engine.process_payload(
             "host",
@@ -311,13 +321,11 @@ def test_raw_password_is_rejected(tmp_path: Path) -> None:
         engine = GameEngine(sender, FakeResolver())
         engine.transcript = GameTranscript(tmp_path / "logs")
 
-        await engine.process_payload(
-            "host", payload("auth", name="Host", password=settings.server.host_password)
-        )
-
-        assert sender.events_of_type("error")[-1].payload["msg"] == (
-            "'password_digest' must be a string"
-        )
+        with pytest.raises(ValueError, match="'password_digest' must be a string"):
+            await engine._authenticate(
+                "host",
+                payload("auth", name="Host", password=settings.server.host_password).data,
+            )
         assert not engine.players
 
     asyncio.run(run())
@@ -395,13 +403,11 @@ def test_title_then_opening_are_the_only_lobby_inference_calls(tmp_path):
         sender = FakeSender()
         engine = GameEngine(sender, manager)
         engine.transcript = GameTranscript(tmp_path / "logs")
-        await engine.process_payload(
+        await authenticate(
+            engine,
             "host",
-            payload(
-                "auth",
-                name="Host",
-                password_digest=password_digest(settings.server.host_password, "host"),
-            ),
+            name="Host",
+            password=settings.server.host_password,
         )
         await engine.process_payload(
             "host", payload("scenario_init", scenario="A gate blocks the road.")
@@ -414,13 +420,11 @@ def test_title_then_opening_are_the_only_lobby_inference_calls(tmp_path):
         assert manager.history == []
         assert engine.current_scenario_state is None
         assert engine.transcript.path is None
-        await engine.process_payload(
+        await authenticate(
+            engine,
             "player",
-            payload(
-                "auth",
-                name="Player",
-                password_digest=password_digest(settings.server.player_password, "player"),
-            ),
+            name="Player",
+            password=settings.server.player_password,
         )
         assert len(client.calls) == 1
         snapshot = sender.events_of_type("auth_ok")[-1].payload

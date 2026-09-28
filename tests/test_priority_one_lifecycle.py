@@ -85,14 +85,14 @@ class ControlledResolver(FakeResolver):
 async def auth(engine, who):
     """Authenticate a client against the engine."""
     password = settings.server.host_password if who == "host" else settings.server.player_password
-    await engine.process_payload(
+    await engine._authenticate(
         who,
         payload(
             "auth",
             name=who.title(),
             password_digest=password_digest(password, who),
             reconnect_token=engine.players[who].reconnect_token if who in engine.players else "",
-        ),
+        ).data,
     )
 
 

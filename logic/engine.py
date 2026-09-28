@@ -25,7 +25,6 @@ class GameEngine(LobbyMixin):
     """One session; state lock is never held over network or filesystem work."""
 
     PAYLOAD_HANDLERS = {
-        "auth": "_authenticate",
         "chat": "_chat",
         "scenario_init": "_initialize_scenario",
         "start_game": "_start_game",
