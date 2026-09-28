@@ -17,14 +17,23 @@ from openai import (
 from pydantic import BaseModel, ValidationError
 
 from core.config import settings
-from core.schemas import ChanceEventResult, ContextSummary, DicePlan, RoundResolution, ScenarioTitle
+from core.schemas import (
+    ChanceEventResult,
+    ChanceRuleDecision,
+    ChanceRuleInterpretation,
+    ChanceTriggerPlan,
+    ContextSummary,
+    DicePlan,
+    RoundResolution,
+    ScenarioTitle,
+)
 from logic.usage import UsageTotals, counter
 from logic.dice import (
-    chance_events_from_decisions,
-    conditional_chance_rule_ids,
+    chance_events_from_decision,
+    conditional_chance_rule,
     has_non_percentage_private_guidance,
     non_percentage_guidance_lines,
-    normalize_chance_rule_decisions,
+    normalize_chance_rule_decision,
 )
 from logic.presentation import name_resolution
 from logic.debug_log import RawResponseLogger, request_type_context
@@ -66,6 +75,8 @@ class LLMContextManager:
         self.history: list[dict[str, str]] = []
         self.memory: dict[str, str] | None = None
         self.private_guidance = ""
+        self.chance_rule_interpretation: ChanceRuleInterpretation | None = None
+        self._chance_rule_prepared = False
         self._known_player_names: list[str] = []
         self.last_token_usage = self.system_prompt_tokens + 3
         self.game_usage = UsageTotals()
@@ -121,6 +132,8 @@ class LLMContextManager:
         self._last_response_text = None
         self.memory = None
         self.private_guidance = guidance
+        self.chance_rule_interpretation = None
+        self._chance_rule_prepared = False
         self._known_player_names = []
         self.game_usage = UsageTotals()
         self.round_usage = UsageTotals()
@@ -160,6 +173,57 @@ class LLMContextManager:
             history_prompt=prompts.opening_memory_prompt(player_names),
         )
 
+    async def prepare_chance_rule(self) -> None:
+        """Normalize the one conditional chance instruction once before players act."""
+        if self._chance_rule_prepared:
+            return
+        rule = conditional_chance_rule(self.private_guidance)
+        if rule is not None:
+            interpretation = await self._request(
+                prompts.chance_rule_prompt(rule[0]),
+                ChanceRuleInterpretation,
+                remember=False,
+                include_history=False,
+                kind="chance_rule",
+            )
+            self.chance_rule_interpretation = interpretation
+        self._chance_rule_prepared = True
+
+    async def _plan_chance_triggers(
+        self, round_buffer: dict[str, str], current_state: str
+    ) -> ChanceRuleDecision | None:
+        """Run the focused structured trigger pass for the normalized conditional rule."""
+        interpretation = self.chance_rule_interpretation
+        if interpretation is None:
+            return None
+        result = await self._request(
+            prompts.chance_trigger_prompt(round_buffer, current_state, interpretation),
+            ChanceTriggerPlan,
+            remember=False,
+            include_history=False,
+            kind="chance_trigger",
+        )
+        names = {name.casefold(): name for name in round_buffer}
+        matched = []
+        for value in result.occurrences:
+            if interpretation.occurrence_scope == "shared":
+                if value.strip().casefold() == "shared" or value.strip().casefold() in names:
+                    matched = ["shared"]
+                    break
+            else:
+                name = names.get(value.strip().casefold())
+                if name is not None and name not in matched:
+                    matched.append(name)
+        return ChanceRuleDecision(
+            trigger="condition",
+            occurrences=matched,
+            reason=(
+                "The structured trigger pass found a current occurrence."
+                if matched
+                else "The structured trigger pass found no current occurrence."
+            ),
+        )
+
     async def plan_dice(self, round_buffer: dict[str, str], current_state: str = "") -> DicePlan:
         """Ask the DM which actions need uncertainty resolved by a d100.
 
@@ -168,14 +232,15 @@ class LLMContextManager:
         """
         logger.info("Planning dice for %d player actions", len(round_buffer))
         self._known_player_names = list(dict.fromkeys([*self._known_player_names, *round_buffer]))
-        prompt = prompts.dice_prompt(round_buffer, current_state, self.private_guidance)
+        await self.prepare_chance_rule()
+        chance_decision = await self._plan_chance_triggers(round_buffer, current_state)
+        prompt = prompts.dice_prompt(round_buffer, current_state)
         return await self._request(
             prompt,
             participant_schema(
                 DicePlan,
                 tuple(round_buffer),
                 has_non_percentage_private_guidance(self.private_guidance),
-                conditional_chance_rule_ids(self.private_guidance),
                 settings.llm.provider,
                 private_sources=non_percentage_guidance_lines(self.private_guidance),
             ),
@@ -183,6 +248,7 @@ class LLMContextManager:
             kind="dice",
             expected_names=tuple(round_buffer),
             planning_input={"actions": round_buffer, "current_state": current_state},
+            chance_decision=chance_decision,
         )
 
     async def generate_resolution(
@@ -223,9 +289,13 @@ class LLMContextManager:
         system = self.system_prompt
         if kind == "dice":
             system = {"role": "system", "content": prompts.DICE_PLANNER_SYSTEM_PROMPT}
+        genesis = self.genesis_state
+        if kind == "chance_trigger" and genesis is not None:
+            scenario = genesis["content"].split("\n\nAdditional DM Guidance:", 1)[0]
+            genesis = {"role": "user", "content": scenario}
         return [
             system,
-            *([self.genesis_state] if self.genesis_state else []),
+            *([genesis] if genesis else []),
             *([self.memory] if self.memory else []),
         ]
 
@@ -237,6 +307,7 @@ class LLMContextManager:
         resolution request.  The final resolution prompt is checked again by ``_parse``
         after generated dice and chance-event context are available.
         """
+        await self.prepare_chance_rule()
         await self.budget.discover_context_window()
         resolution_schema = participant_schema(
             RoundResolution, tuple(actions), provider=settings.llm.provider
@@ -245,7 +316,6 @@ class LLMContextManager:
             DicePlan,
             tuple(actions),
             has_non_percentage_private_guidance(self.private_guidance),
-            conditional_chance_rule_ids(self.private_guidance),
             settings.llm.provider,
             private_sources=non_percentage_guidance_lines(self.private_guidance),
         )
@@ -258,11 +328,25 @@ class LLMContextManager:
                 "round",
             ),
             (
-                prompts.dice_prompt(actions, current_state, self.private_guidance),
+                prompts.dice_prompt(actions, current_state),
                 dice_schema,
                 "dice",
             ),
         )
+        if self.chance_rule_interpretation is not None:
+            requests = (
+                requests[0],
+                (
+                    prompts.chance_trigger_prompt(
+                        actions,
+                        current_state,
+                        self.chance_rule_interpretation,
+                    ),
+                    ChanceTriggerPlan,
+                    "chance_trigger",
+                ),
+                requests[1],
+            )
         for prompt, schema, kind in requests:
             count = await self.budget.input_tokens(
                 [*self._fixed_messages(kind), prompt], schema, kind
@@ -283,6 +367,7 @@ class LLMContextManager:
         kind: str = "round",
         private_rolls: dict[str, int] | None = None,
         private_events: list[ChanceEventResult] | None = None,
+        chance_decision: ChanceRuleDecision | None = None,
         planning_input: dict[str, Any] | None = None,
         expected_names: tuple[str, ...] | None = None,
         opening_names: tuple[str, ...] | None = None,
@@ -313,14 +398,19 @@ class LLMContextManager:
                 check_semantics(result, expected_names)
                 if isinstance(result, DicePlan):
                     try:
-                        decisions = normalize_chance_rule_decisions(
-                            result.chance_rule_decisions, self.private_guidance
+                        decision = normalize_chance_rule_decision(
+                            chance_decision,
+                            self.private_guidance,
+                            self.chance_rule_interpretation,
+                            expected_names,
                         )
                         result = result.model_copy(
                             update={
-                                "chance_rule_decisions": decisions,
-                                "chance_events": chance_events_from_decisions(
-                                    decisions, self.private_guidance
+                                "chance_events": chance_events_from_decision(
+                                    decision,
+                                    self.private_guidance,
+                                    self.chance_rule_interpretation,
+                                    expected_names,
                                 ),
                             }
                         )
@@ -330,15 +420,6 @@ class LLMContextManager:
                     result = await auditing.classify_hidden_checks(
                         self._parse, result, planning_input or {}, repair_attempt=repair
                     )
-                    if conditional_chance_rule_ids(self.private_guidance):
-                        await auditing.audit_planned_checks(
-                            self._parse,
-                            [*self._fixed_messages("dice"), *self.history],
-                            self.private_guidance,
-                            result,
-                            planning_input or {"request": prompt["content"]},
-                            repair_attempt=repair,
-                        )
                 if isinstance(result, ScenarioTitle):
                     public_title = RoundResolution(
                         global_narrative=result.title, player_resolutions={}

@@ -187,6 +187,9 @@ class LobbyMixin:
     ) -> None:
         """Generate only the title and open the lobby for players."""
         self.resolver.set_genesis(scenario, guidance)
+        prepare_chance_rule = getattr(self.resolver, "prepare_chance_rule", None)
+        if prepare_chance_rule is not None:
+            await prepare_chance_rule()
         title = await self.resolver.generate_scenario_title()
         async with self.effects_lock:
             async with self.lock:

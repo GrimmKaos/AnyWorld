@@ -15,7 +15,17 @@ from .response_schemas import schema_text
 
 # Both providers count hidden reasoning within the completion cap.
 _THINKING_OUTPUT_BUDGETS = {"none": 0, "low": 2_048, "medium": 4_096, "high": 8_192}
-_NO_THINKING_KINDS = frozenset({"title", "dice", "dice_audit", "event_audit", "summary_audit"})
+_NO_THINKING_KINDS = frozenset(
+    {
+        "title",
+        "dice",
+        "chance_rule",
+        "chance_trigger",
+        "dice_audit",
+        "event_audit",
+        "summary_audit",
+    }
+)
 
 
 class TokenBudget:
@@ -37,7 +47,11 @@ class TokenBudget:
         """Return the configured output token cap for a request kind."""
         if kind == "title":
             return min(128, settings.llm.initial_output_tokens)
-        cap_kind = "summary" if kind in {"summary_audit", "event_audit", "dice_audit"} else kind
+        cap_kind = (
+            "summary"
+            if kind in {"summary_audit", "event_audit", "dice_audit"}
+            else "dice" if kind in {"chance_rule", "chance_trigger"} else kind
+        )
         return getattr(settings.llm, f"{cap_kind}_output_tokens")
 
     @staticmethod

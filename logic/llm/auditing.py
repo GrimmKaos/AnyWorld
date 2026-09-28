@@ -8,13 +8,11 @@ from pydantic import BaseModel
 from core.schemas import (
     AuditVerdict,
     ChanceEventResult,
-    ConditionalCheckAudit,
     ContextSummary,
     DicePlan,
     RoundResolution,
     SummaryAudit,
 )
-from logic.dice import conditional_chance_rule_ids
 from . import prompts
 from .errors import LLMResolutionError
 
@@ -53,36 +51,6 @@ async def classify_hidden_checks(
             "hidden_roll_sources": {name: plan.hidden_roll_sources[name] for name in hidden},
         }
     )
-
-
-async def audit_planned_checks(
-    parse: Parse,
-    messages: list[dict[str, str]],
-    guidance: str,
-    plan: DicePlan,
-    planning_input: dict[str, Any],
-    *,
-    repair_attempt: int,
-) -> None:
-    """Audit missed conditions and privacy classification before rolling dice."""
-    conditional_ids = {
-        key
-        for key in conditional_chance_rule_ids(guidance)
-        if plan.chance_rule_decisions[key].trigger == "condition"
-    }
-    if not conditional_ids:
-        return
-    audit_plan = {key: plan.chance_rule_decisions[key].occurrences for key in conditional_ids}
-    audit_messages = prompts.planned_checks_audit_prompt(messages, planning_input, audit_plan)
-    audit = await parse(
-        audit_messages, ConditionalCheckAudit, "dice_audit", repair_attempt=repair_attempt
-    )
-    if audit.missing_occurrences or audit.invalid_occurrences:
-        raise LLMResolutionError(
-            "Conditional occurrence mismatch; change only chance_rule_decisions. "
-            "Preserve action rolls and their privacy classification. " + audit.model_dump_json()
-        )
-    logger.info("Private dice planning audit passed")
 
 
 async def audit_chance_outcomes(

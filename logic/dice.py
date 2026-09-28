@@ -4,17 +4,24 @@ import secrets
 import re
 from functools import lru_cache
 
-from core.schemas import ChanceEvent, ChanceEventResult, ChanceRuleDecision
+from core.schemas import (
+    ChanceEvent,
+    ChanceEventResult,
+    ChanceRuleDecision,
+    ChanceRuleInterpretation,
+)
 
 
-def private_chance_rules(guidance: str) -> dict[str, tuple[str, int]]:
-    """Index percentage-bearing guidance lines without interpreting their conditions."""
-    rules = {}
+def private_chance_rule(guidance: str) -> tuple[str, int] | None:
+    """Return the one dedicated percentage rule, without interpreting its condition."""
+    rule = None
     for line in guidance.splitlines():
         percentages = re.findall(r"([+-]?\d+(?:[.,]\d+)?)\s*(?:%|percent\b)", line, re.IGNORECASE)
         if len(percentages) == 1 and percentages[0].isdigit() and 0 <= int(percentages[0]) <= 100:
-            rules[f"rule-{len(rules) + 1}"] = (line.strip(), int(percentages[0]))
-    return rules
+            if rule is not None:
+                raise ValueError("Only one dedicated percentage rule is allowed per game.")
+            rule = (line.strip(), int(percentages[0]))
+    return rule
 
 
 def combine_private_guidance(guidance: str, chance_event: str = "") -> str:
@@ -33,7 +40,7 @@ def combine_private_guidance(guidance: str, chance_event: str = "") -> str:
         len(matches) != 1
         or not matches[0].isdigit()
         or not 0 <= int(matches[0]) <= 100
-        or len(private_chance_rules(chance_event)) != 1
+        or private_chance_rule(chance_event) is None
     ):
         raise ValueError(
             "'chance_event' must contain exactly one whole-number percentage from 0 to 100."
@@ -64,13 +71,12 @@ def _has_conditional_trigger(instruction: str) -> bool:
     )
 
 
-def conditional_chance_rule_ids(guidance: str) -> tuple[str, ...]:
-    """Return chance rules that explicitly name a condition; others default to each round."""
-    return tuple(
-        rule_id
-        for rule_id, (instruction, _) in private_chance_rules(guidance).items()
-        if not _is_per_round_rule(instruction) and _has_conditional_trigger(instruction)
-    )
+def conditional_chance_rule(guidance: str) -> tuple[str, int] | None:
+    """Return the dedicated rule when it explicitly names a condition."""
+    rule = private_chance_rule(guidance)
+    if rule is not None and not _is_per_round_rule(rule[0]) and _has_conditional_trigger(rule[0]):
+        return rule
+    return None
 
 
 @lru_cache(maxsize=64)
@@ -85,108 +91,145 @@ def non_percentage_guidance_lines(guidance: str) -> tuple[str, ...]:
 
 def has_non_percentage_private_guidance(guidance: str) -> bool:
     """Return whether guidance contains a possible private cause beyond chance rules."""
-    chance_lines = {instruction for instruction, _ in private_chance_rules(guidance).values()}
-    return any(line.strip() and line.strip() not in chance_lines for line in guidance.splitlines())
+    chance_rule = private_chance_rule(guidance)
+    chance_line = chance_rule[0] if chance_rule is not None else None
+    return any(line.strip() and line.strip() != chance_line for line in guidance.splitlines())
 
 
-def normalize_chance_rule_decisions(
-    decisions: dict[str, ChanceRuleDecision], guidance: str
-) -> dict[str, ChanceRuleDecision]:
-    """Enforce host-authored triggers; unspecified chance rules default to each round."""
-    rules = private_chance_rules(guidance)
-    required = set(conditional_chance_rule_ids(guidance))
-    if not required.issubset(decisions) or not set(decisions).issubset(rules):
-        raise ValueError(
-            "Chance plan must account for every private rule in chance_rule_decisions; "
-            "conditional rules required: "
-            + (", ".join(sorted(required)) or "none")
-            + ". Per-round rules are generated automatically."
+def _normalize_structured_occurrences(
+    decision: ChanceRuleDecision,
+    interpretation: ChanceRuleInterpretation | None,
+    expected_names: tuple[str, ...] | None,
+) -> ChanceRuleDecision:
+    """Convert normalized action matches to exact participant names only."""
+    if interpretation is None:
+        return decision
+    if not expected_names:
+        return decision
+    names = {name.casefold(): name for name in expected_names}
+    if interpretation.occurrence_scope == "shared" and any(
+        occurrence.strip().casefold() == "shared" for occurrence in decision.occurrences
+    ):
+        return decision.model_copy(update={"occurrences": ["shared"]})
+    matched = []
+    for occurrence in decision.occurrences:
+        name = names.get(occurrence.strip().casefold())
+        if name is not None and name not in matched:
+            matched.append(name)
+    if interpretation.occurrence_scope == "shared":
+        matched = ["shared"] if matched else []
+    return decision.model_copy(update={"occurrences": matched})
+
+
+def normalize_chance_rule_decision(
+    decision: ChanceRuleDecision | None,
+    guidance: str,
+    interpretation: ChanceRuleInterpretation | None = None,
+    expected_names: tuple[str, ...] | None = None,
+) -> ChanceRuleDecision | None:
+    """Enforce the one host-authored trigger; unspecified rules default to each round."""
+    rule = private_chance_rule(guidance)
+    if rule is None:
+        if decision is not None:
+            raise ValueError("A chance decision was supplied without a private chance rule.")
+        return None
+    instruction, _ = rule
+    if _is_per_round_rule(instruction) or not _has_conditional_trigger(instruction):
+        return ChanceRuleDecision(
+            trigger="per_round",
+            occurrences=["round"],
+            reason=(
+                "The private rule explicitly applies once every round."
+                if _is_per_round_rule(instruction)
+                else "No conditional trigger was specified; use the per-round default."
+            ),
         )
-    normalized = {}
-    for rule_id, (instruction, _) in rules.items():
-        decision = decisions.get(rule_id)
-        if _is_per_round_rule(instruction) or rule_id not in required:
-            normalized[rule_id] = ChanceRuleDecision(
-                trigger="per_round",
-                occurrences=["round"],
-                reason=(
-                    "The private rule explicitly applies once every round."
-                    if _is_per_round_rule(instruction)
-                    else "No conditional trigger was specified; use the per-round default."
-                ),
-            )
-        else:
-            assert decision is not None
-            normalized[rule_id] = decision.model_copy(update={"trigger": "condition"})
-    return normalized
+    if decision is None:
+        raise ValueError("The conditional chance rule requires a structured trigger decision.")
+    return _normalize_structured_occurrences(
+        decision.model_copy(update={"trigger": "condition"}),
+        interpretation,
+        expected_names,
+    )
 
 
 def validate_chance_events(
     events: list[ChanceEvent],
     guidance: str,
 ) -> list[ChanceEvent]:
-    """Resolve model references to trusted rules; tolerate unambiguous paraphrases."""
-    rules = private_chance_rules(guidance)
+    """Resolve event metadata to the one trusted private rule."""
+    rule = private_chance_rule(guidance)
+    if rule is None:
+        if events:
+            raise ValueError("Chance events require one private percentage rule.")
+        return []
+    instruction, percentage = rule
     normalized = []
     seen = set()
     for event in events:
-        reference = " ".join(event.source_rule.casefold().split())
-        rule = rules.get(reference)
-        if rule is None:
-            candidates = [item for item in rules.values() if item[1] == event.chance_percent]
-            matches = [
-                item for item in candidates if " ".join(item[0].casefold().split()) == reference
-            ]
-            if len(matches) == 1:
-                rule = matches[0]
-            elif len(candidates) == 1:
-                # Replace the paraphrase, rather than trusting its description of the effect.
-                rule = candidates[0]
-        if rule is None or rule[1] != event.chance_percent:
+        if event.chance_percent != percentage:
             raise ValueError(
-                "Chance event must select a matching private whole-percent rule. "
-                "Use its rule ID from the private chance rule catalog in source_rule; "
-                "keep the catalog percentage unchanged."
+                "Chance event must keep the dedicated private rule's percentage unchanged."
             )
         occurrence = "round" if event.trigger == "per_round" else event.occurrence.strip()
         if not occurrence:
             raise ValueError("Conditional chance events must describe the triggering occurrence.")
-        key = (rule[0].casefold(), occurrence.casefold())
+        key = (instruction.casefold(), occurrence.casefold())
         if key in seen:
             raise ValueError("Chance events must not repeat the same rule and occurrence.")
         seen.add(key)
         normalized.append(
-            event.model_copy(update={"source_rule": rule[0], "occurrence": occurrence})
+            event.model_copy(update={"source_rule": instruction, "occurrence": occurrence})
         )
     return normalized
 
 
-def chance_events_from_decisions(
-    decisions: dict[str, ChanceRuleDecision], guidance: str
+def chance_events_from_decision(
+    decision: ChanceRuleDecision | None,
+    guidance: str,
+    interpretation: ChanceRuleInterpretation | None = None,
+    expected_names: tuple[str, ...] | None = None,
 ) -> list[ChanceEvent]:
-    """Build every roll from per-rule occurrences, without a second applicability flag."""
-    rules = private_chance_rules(guidance)
-    decisions = normalize_chance_rule_decisions(decisions, guidance)
-    events = []
-    for rule_id, (_, percentage) in rules.items():
-        decision = decisions[rule_id]
-        if not decision.reason.strip():
-            raise ValueError("Explain each rule's triggering occurrences or why none occurred.")
-        occurrences = decision.occurrences
-        if decision.trigger == "per_round":
-            # Every-round rules get exactly one check; other conditions use condition.
-            occurrences = ["round"]
-        for occurrence in occurrences:
-            events.append(
-                ChanceEvent(
-                    source_rule=rule_id,
-                    chance_percent=percentage,
-                    trigger=decision.trigger,
-                    occurrence=occurrence,
-                )
+    """Build every roll from the one rule's occurrences, without a second flag."""
+    rule = private_chance_rule(guidance)
+    normalized = normalize_chance_rule_decision(decision, guidance, interpretation, expected_names)
+    if normalized is None:
+        return []
+    if not normalized.reason.strip():
+        raise ValueError("Explain the chance rule's triggering occurrences or why none occurred.")
+    if rule is None:
+        return []
+    instruction, percentage = rule
+    occurrences = normalized.occurrences
+    if normalized.trigger == "per_round":
+        occurrences = ["round"]
+    else:
+        normalized_occurrences = [" ".join(occurrence.split()) for occurrence in occurrences]
+        if any(
+            not occurrence
+            or occurrence.casefold() in {"round", "this round", "current round", "per round"}
+            for occurrence in normalized_occurrences
+        ):
+            raise ValueError(
+                "The conditional chance rule requires an occurrence describing the actual "
+                "trigger; 'round' is reserved for per-round rules."
             )
-    if len(events) > 16:
-        raise ValueError("More than 16 chance occurrences apply; split or simplify the rules.")
+        occurrences = normalized_occurrences
+    events = []
+    for occurrence in occurrences:
+        if interpretation is not None:
+            if occurrence == "shared":
+                occurrence = "The shared action trigger occurred"
+            else:
+                occurrence = f"{occurrence} matched the normalized trigger"
+        events.append(
+            ChanceEvent(
+                source_rule=instruction,
+                chance_percent=percentage,
+                trigger=normalized.trigger,
+                occurrence=occurrence,
+            )
+        )
     return validate_chance_events(events, guidance)
 
 

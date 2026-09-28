@@ -66,6 +66,21 @@ class ChanceRuleDecision(StrictModel):
     reason: str = Field(min_length=1, max_length=240)
 
 
+class ChanceRuleInterpretation(StrictModel):
+    """Private normalized meaning of a host-authored chance rule."""
+
+    trigger_type: Literal["action", "world_transition"]
+    trigger_description: str = Field(min_length=1, max_length=240)
+    occurrence_scope: Literal["per_player", "shared"]
+    effect: str = Field(min_length=1, max_length=500)
+
+
+class ChanceTriggerPlan(StrictModel):
+    """Exact participant matches for the normalized private chance rule this round."""
+
+    occurrences: list[str] = Field(max_length=16)
+
+
 class DicePlan(StrictModel):
     """LLM-selected checks; hidden names are never disclosed to clients."""
 
@@ -73,14 +88,6 @@ class DicePlan(StrictModel):
     hidden_rolls: list[str]
     hidden_roll_sources: dict[str, str] = Field(default_factory=dict)
     chance_events: list[ChanceEvent] = Field(default_factory=list, max_length=16)
-    chance_rule_decisions: dict[str, ChanceRuleDecision] = Field(default_factory=dict)
-
-
-class ConditionalCheckAudit(StrictModel):
-    """Concrete occurrence differences for one conditional rule, before any dice rolls."""
-
-    missing_occurrences: list[str] = Field(max_length=16)
-    invalid_occurrences: list[str] = Field(max_length=16)
 
 
 class ContextSummary(StrictModel):

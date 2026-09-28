@@ -69,6 +69,10 @@ class ResolutionManager(Protocol):
         """Set the initial scenario and optional guidance."""
         ...
 
+    async def prepare_chance_rule(self) -> None:
+        """Normalize the private conditional percentage rule before the first action."""
+        ...
+
     async def discover_context_window(self) -> None:
         """Discover the backend context window size."""
         ...

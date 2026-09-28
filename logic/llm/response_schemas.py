@@ -6,7 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, create_model
 
-from core.schemas import ChanceEvent, ChanceRuleDecision, ContextSummary, DicePlan, RoundResolution
+from core.schemas import ChanceEvent, ContextSummary, DicePlan, RoundResolution
 
 
 @lru_cache(maxsize=32)
@@ -14,7 +14,6 @@ def participant_schema(
     base: type[BaseModel],
     names: tuple[str, ...],
     allow_hidden: bool = False,
-    chance_rule_ids: tuple[str, ...] = (),
     provider: str = "compatible",
     private_sources: tuple[str, ...] | None = None,
 ) -> type[BaseModel]:
@@ -42,19 +41,6 @@ def participant_schema(
         )
     }
     if base is DicePlan:
-        fields["chance_rule_decisions"] = (
-            dict[str, ChanceRuleDecision],
-            Field(
-                json_schema_extra={
-                    "properties": {
-                        rule_id: ChanceRuleDecision.model_json_schema()
-                        for rule_id in chance_rule_ids
-                    },
-                    "required": list(chance_rule_ids),
-                    "additionalProperties": False,
-                }
-            ),
-        )
         fields["chance_events"] = (
             list[ChanceEvent],
             Field(max_length=0),
