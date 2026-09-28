@@ -110,7 +110,7 @@ llm:
   context_window_size: 1050000
   tokenizer_encoding: "cl100k_base"
   endpoint: "http://localhost:8033/v1" # ignored for provider: openai
-  api_key: "sk-no-key-required"          # ignored when OPENAI_API_KEY is set
+  api_key: "sk-no-key-required" # ignored when OPENAI_API_KEY is set
 ```
 
 Direct OpenAI support has been tested live with `gpt-5.6-luna`, including scenario titles,
@@ -150,11 +150,11 @@ max_retries: 1
 
 Additional optional `llm` settings:
 
-| Setting                      | Default | Behavior                                                                                                                                                                                                                 |
-| ---------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Setting                      | Default | Behavior                                                                                                                                                                                                                                                                                                                                   |
+| ---------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `reasoning_effort`           | `none`  | Shared thinking effort for compatible and OpenAI backends: `none`, `low`, `medium`, or `high`. Compatible backends receive matching `chat_template_kwargs`; support depends on the loaded model/template. The request reserves 2,048/4,096/8,192 completion tokens for low/medium/high reasoning before the configured visible-output cap. |
-| `compaction_target_fraction` | `0.75`  | After compaction starts, aims to leave the upcoming request within this fraction of the context window. Allowed range: `0.5`–`1.0`.                                                                                      |
-| `history_round_limit`        | `null`  | Optionally requests earlier memory checkpoints after this many stored request/response pairs, including the generated opening; title generation is not stored. Allowed range: `2`–`100`; this is not a hard history cap. |
+| `compaction_target_fraction` | `0.75`  | After compaction starts, aims to leave the upcoming request within this fraction of the context window. Allowed range: `0.5`–`1.0`.                                                                                                                                                                                                        |
+| `history_round_limit`        | `null`  | Optionally requests earlier memory checkpoints after this many stored request/response pairs, including the generated opening; title generation is not stored. Allowed range: `2`–`100`; this is not a hard history cap.                                                                                                                   |
 
 Scenario titles and the short dice, event-audit, and summary-audit requests force
 `reasoning_effort: none` so their small structured-output budgets are not consumed by hidden
@@ -241,6 +241,9 @@ address for internet play. Allow the configured TCP port through the firewall; i
 also require router port forwarding. Remove temporary forwarding when the session ends.
 
 ### Benchmarking local-model instruction following
+
+Use benchmark_chance_events.py to benchmark how your selected local model follows instructions.
+Useful for deciding which model you want to run as your Dungeon Master AI.
 
 The chance-event benchmark is an opt-in live-model test. It exercises the configured compatible
 backend with 20 scenarios and 40 action trials: 16 conditional rules each receive one triggering
