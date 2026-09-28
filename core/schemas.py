@@ -111,3 +111,10 @@ class SummaryAudit(StrictModel):
 
     preserved: bool
     corrections: list[str]
+
+
+class AuditVerdict(StrictModel):
+    """Private yes/no verdict for hidden-check and chance-outcome validation."""
+
+    preserved: bool
+    corrections: list[str] = Field(default_factory=list)

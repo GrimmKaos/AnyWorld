@@ -8,13 +8,13 @@ from pydantic import ValidationError
 
 from core.config import settings
 from core.schemas import (
+    AuditVerdict,
     ChanceEvent,
     ChanceEventResult,
     ChanceRuleDecision,
     ConditionalCheckAudit,
     DicePlan,
     RoundResolution,
-    SummaryAudit,
 )
 from logic import dice
 from logic.llm_manager import LLMContextManager, LLMResolutionError, participant_schema
@@ -458,7 +458,7 @@ def test_per_round_plan_needs_no_audit_and_invalid_hidden_source_stays_public():
         drafts = []
 
         def response(kwargs):
-            assert kwargs["response_format"] is not SummaryAudit
+            assert kwargs["response_format"] is not AuditVerdict
             drafts.append(kwargs)
             return DicePlan(
                 rolls={"Arxs": True},
@@ -597,8 +597,8 @@ def test_unrelated_private_guidance_cannot_hide_public_action_roll(tmp_path, mon
         drafts = []
 
         def response(kwargs):
-            if kwargs["response_format"] is SummaryAudit:
-                return SummaryAudit(
+            if kwargs["response_format"] is AuditVerdict:
+                return AuditVerdict(
                     preserved=False,
                     corrections=["NPC pacing guidance does not make Host's ordinary roll private."],
                 )
@@ -634,9 +634,9 @@ def test_confused_hidden_audit_cannot_replan_public_rolls_or_per_round_events():
         audits = []
 
         def response(kwargs):
-            if kwargs["response_format"] is SummaryAudit:
+            if kwargs["response_format"] is AuditVerdict:
                 audits.append(kwargs)
-                return SummaryAudit(
+                return AuditVerdict(
                     preserved=False,
                     corrections=["Missing Banana Split check; make psychic powers hidden."],
                 )
@@ -761,9 +761,9 @@ def test_successful_event_omission_is_repaired_or_paused_before_remembering(repa
         audits = []
 
         def response(kwargs):
-            if kwargs["response_format"] is SummaryAudit:
+            if kwargs["response_format"] is AuditVerdict:
                 audits.append(kwargs)
-                return SummaryAudit(
+                return AuditVerdict(
                     preserved=repair_succeeds and len(audits) == 2,
                     corrections=["Host's clothes must visibly become a clown costume."],
                 )
@@ -827,8 +827,8 @@ def test_nonblocking_event_prompt_preserves_the_original_action():
 
         def response(kwargs):
             return (
-                SummaryAudit(preserved=True, corrections=[])
-                if kwargs["response_format"] is SummaryAudit
+                AuditVerdict(preserved=True, corrections=[])
+                if kwargs["response_format"] is AuditVerdict
                 else resolution
             )
 

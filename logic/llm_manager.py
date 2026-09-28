@@ -24,6 +24,7 @@ import tiktoken
 
 from core.config import settings
 from core.schemas import (
+    AuditVerdict,
     ChanceEvent,
     ChanceEventResult,
     ChanceRuleDecision,
@@ -972,7 +973,7 @@ class LLMContextManager:
                 },
             ]
             verdict = await self._parse(
-                messages, SummaryAudit, "dice_audit", repair_attempt=repair_attempt
+                messages, AuditVerdict, "dice_audit", repair_attempt=repair_attempt
             )
             if verdict.preserved:
                 hidden.append(name)
@@ -1083,7 +1084,7 @@ class LLMContextManager:
         narrative_response = self._last_response_text
         try:
             audit = await self._parse(
-                audit_messages, SummaryAudit, "event_audit", repair_attempt=repair_attempt
+                audit_messages, AuditVerdict, "event_audit", repair_attempt=repair_attempt
             )
         finally:
             self._last_response_text = narrative_response

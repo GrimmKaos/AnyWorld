@@ -8,8 +8,15 @@ import httpx
 import pytest
 
 from core.config import settings
-from core.schemas import ContextSummary, DicePlan, RoundResolution, ScenarioTitle, SummaryAudit
-from core.schemas import ConditionalCheckAudit
+from core.schemas import (
+    AuditVerdict,
+    ConditionalCheckAudit,
+    ContextSummary,
+    DicePlan,
+    RoundResolution,
+    ScenarioTitle,
+    SummaryAudit,
+)
 from logic.llm_manager import LLMContextManager, LLMResolutionError
 
 
@@ -32,8 +39,11 @@ class FakeClient:
         result = self.result
         if callable(result):
             result = result(kwargs)
-        elif isinstance(result, DicePlan) and kwargs["response_format"] is SummaryAudit:
-            result = SummaryAudit(preserved=True, corrections=[])
+        elif isinstance(result, DicePlan) and kwargs["response_format"] in (
+            AuditVerdict,
+            SummaryAudit,
+        ):
+            result = kwargs["response_format"](preserved=True, corrections=[])
         elif isinstance(result, DicePlan) and kwargs["response_format"] is ConditionalCheckAudit:
             result = ConditionalCheckAudit(missing_occurrences=[], invalid_occurrences=[])
         if isinstance(result, Exception):
@@ -48,8 +58,8 @@ class FakeClient:
                 )
             elif schema is ScenarioTitle:
                 result = ScenarioTitle(title="The gate")
-            elif schema is SummaryAudit:
-                result = SummaryAudit(preserved=True, corrections=[])
+            elif schema in (AuditVerdict, SummaryAudit):
+                result = schema(preserved=True, corrections=[])
             elif schema is ConditionalCheckAudit:
                 result = ConditionalCheckAudit(missing_occurrences=[], invalid_occurrences=[])
             elif issubclass(schema, ContextSummary):
