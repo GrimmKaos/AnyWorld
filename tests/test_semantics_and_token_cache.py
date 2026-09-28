@@ -145,9 +145,12 @@ def test_request_token_cache_is_bounded_and_invalidates_on_input_and_template_ch
         count = await manager._input_tokens(messages, RoundResolution)
         assert await manager._input_tokens(messages, RoundResolution) == count
         assert len(calls) == 2
-        settings.llm.enable_thinking = False
+        settings.llm.reasoning_effort = "low"
         await manager._input_tokens(messages, RoundResolution)
         assert len(calls) == 4
+        settings.llm.reasoning_effort = "high"
+        await manager._input_tokens(messages, RoundResolution)
+        assert len(calls) == 6
         for index in range(140):
             await manager._input_tokens(
                 [*messages, {"role": "user", "content": str(index)}], RoundResolution
@@ -172,8 +175,8 @@ def test_message_cache_matches_fresh_counts_and_stays_bounded():
     assert manager._context_size(history) == expected
 
 
-def test_preflight_shares_tokenization_across_schemas_and_keeps_allowances():
-    """Different response contracts do not cause repeated tokenization of one prompt."""
+def test_preflight_measures_each_prompt_and_reuses_schema_tokenization():
+    """Preflight counts the actual prompts while schemas reuse their message count."""
 
     async def run():
         settings.llm.provider = "compatible"
@@ -189,7 +192,7 @@ def test_preflight_shares_tokenization_across_schemas_and_keeps_allowances():
 
         manager._http = httpx.AsyncClient(transport=httpx.MockTransport(backend))
         await manager.preflight_round({"Alice": "Look around."}, "A room.")
-        assert calls == ["/apply-template", "/tokenize"]
+        assert calls == ["/apply-template", "/tokenize"] * 2
         messages = [{"role": "user", "content": "Different message"}]
         for schema in (RoundResolution, DicePlan, None, RoundResolution):
             count = await manager._input_tokens(messages, schema)
@@ -198,10 +201,10 @@ def test_preflight_shares_tokenization_across_schemas_and_keeps_allowances():
                 expected += manager._count_tokens(manager._schema_text(schema)) + 64
             assert count == expected
             assert ("schema allowance" in manager.token_count_method) is (schema is not None)
-        assert len(calls) == 4
+        assert len(calls) == 6
         settings.llm.model_name = "changed-model"
         await manager._input_tokens(messages, DicePlan)
-        assert len(calls) == 6
+        assert len(calls) == 8
         await manager.close()
 
     asyncio.run(run())

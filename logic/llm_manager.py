@@ -350,14 +350,10 @@ class LLMContextManager:
             opening_names=tuple(player_names),
         )
 
-    async def plan_dice(self, round_buffer: dict[str, str], current_state: str = "") -> DicePlan:
-        """Ask the DM which actions need uncertainty resolved by a d100.
-
-        The public paragraph is not a complete state snapshot. Include genesis, private
-        guidance, durable memory and recent rounds so unchanged facts still affect checks.
-        """
-        logger.info("Planning dice for %d player actions", len(round_buffer))
-        self._known_player_names = list(dict.fromkeys([*self._known_player_names, *round_buffer]))
+    def _build_dice_prompt(
+        self, round_buffer: dict[str, str], current_state: str = ""
+    ) -> dict[str, str]:
+        """Build the exact dice-planning prompt used for inference and preflight."""
         actions = "\n".join(f"{name}: {action}" for name, action in round_buffer.items())
         chance_catalog = [
             {"source_rule": rule_id, "chance_percent": percentage, "instruction": instruction}
@@ -400,6 +396,18 @@ class LLMContextManager:
                 f"Current game state:\n{current_state}\n\nActions:\n{actions}"
             ),
         }
+
+        return prompt
+
+    async def plan_dice(self, round_buffer: dict[str, str], current_state: str = "") -> DicePlan:
+        """Ask the DM which actions need uncertainty resolved by a d100.
+
+        The public paragraph is not a complete state snapshot. Include genesis, private
+        guidance, durable memory and recent rounds so unchanged facts still affect checks.
+        """
+        logger.info("Planning dice for %d player actions", len(round_buffer))
+        self._known_player_names = list(dict.fromkeys([*self._known_player_names, *round_buffer]))
+        prompt = self._build_dice_prompt(round_buffer, current_state)
         return await self._request(
             prompt,
             participant_schema(
@@ -421,20 +429,14 @@ class LLMContextManager:
             planning_input={"actions": round_buffer, "current_state": current_state},
         )
 
-    async def generate_resolution(
+    def _build_resolution_prompt(
         self,
         round_buffer: dict[str, str],
         dice_results: dict[str, int] | None = None,
         hidden_rolls: set[str] | None = None,
         chance_events: list[ChanceEventResult] | None = None,
-    ) -> RoundResolution:
-        """Resolve a round of actions into a coherent narrative outcome."""
-        logger.info(
-            "Generating resolution for %d actions (dice_results=%d)",
-            len(round_buffer),
-            len(dice_results or {}),
-        )
-        self._known_player_names = list(dict.fromkeys([*self._known_player_names, *round_buffer]))
+    ) -> dict[str, str]:
+        """Build the exact resolution prompt used for inference and preflight."""
         actions = "\n".join(
             f"{name} attempts to: {action}" for name, action in round_buffer.items()
         )
@@ -510,6 +512,26 @@ class LLMContextManager:
                 "when the world has not otherwise changed."
             ),
         }
+
+        return prompt
+
+    async def generate_resolution(
+        self,
+        round_buffer: dict[str, str],
+        dice_results: dict[str, int] | None = None,
+        hidden_rolls: set[str] | None = None,
+        chance_events: list[ChanceEventResult] | None = None,
+    ) -> RoundResolution:
+        """Resolve a round of actions into a coherent narrative outcome."""
+        logger.info(
+            "Generating resolution for %d actions (dice_results=%d)",
+            len(round_buffer),
+            len(dice_results or {}),
+        )
+        self._known_player_names = list(dict.fromkeys([*self._known_player_names, *round_buffer]))
+        prompt = self._build_resolution_prompt(
+            round_buffer, dice_results, hidden_rolls, chance_events
+        )
         return await self._request(
             prompt,
             participant_schema(
@@ -669,17 +691,44 @@ class LLMContextManager:
     async def preflight_round(self, actions: dict[str, str], current_state: str = "") -> None:
         """Reject impossible fixed context/actions before accepting the next action.
 
-        Recent history is compactable; durable memory is not silently expendable.
-        The allowance includes instructions, transition annotations and dice metadata.
+        Recent history is compactable; durable memory is not silently expendable.  This
+        check uses the same prompt builders and response schemas as the planner and the
+        resolution request.  The final resolution prompt is checked again by ``_parse``
+        after generated dice and chance-event context are available.
         """
         await self.discover_context_window()
-        prompt = {
-            "role": "user",
-            "content": json.dumps({"actions": actions, "state": current_state}, ensure_ascii=False),
-        }
-        for schema, kind in ((RoundResolution, "round"), (DicePlan, "dice")):
-            count = await self._input_tokens([*self._fixed_messages(kind), prompt], schema)
-            if not self._fits(count + 1_024 + 256 * len(actions), kind):
+        resolution_schema = participant_schema(
+            RoundResolution, tuple(actions), provider=settings.llm.provider
+        )
+        dice_schema = participant_schema(
+            DicePlan,
+            tuple(actions),
+            has_non_percentage_private_guidance(self.private_guidance),
+            conditional_chance_rule_ids(self.private_guidance),
+            settings.llm.provider,
+            private_sources=tuple(
+                line.strip()
+                for line in self.private_guidance.splitlines()
+                if len(line.strip()) >= 12 and not re.search(r"%|\bpercent\b", line, re.IGNORECASE)
+            ),
+        )
+        prompts = (
+            (
+                self._prepare_request_prompt(
+                    self._build_resolution_prompt(actions), resolution_schema
+                ),
+                resolution_schema,
+                "round",
+            ),
+            (
+                self._build_dice_prompt(actions, current_state),
+                dice_schema,
+                "dice",
+            ),
+        )
+        for prompt, schema, kind in prompts:
+            count = await self._input_tokens([*self._fixed_messages(kind), prompt], schema, kind)
+            if not self._fits(count, kind):
                 raise LLMResolutionError(
                     "Scenario, durable memory and combined actions exceed the context budget. "
                     "Shorten the action or use a larger backend context."
@@ -696,6 +745,29 @@ class LLMContextManager:
             )
         return "Write game narration and outcomes in English. Preserve exact player names."
 
+    def _prepare_request_prompt(
+        self, prompt: dict[str, str], schema: type[BaseModel]
+    ) -> dict[str, str]:
+        """Add shared request instructions before counting or sending a prompt."""
+        if not issubclass(schema, RoundResolution):
+            return prompt
+        return {
+            **prompt,
+            "content": prompt["content"]
+            + (
+                "\n"
+                + self._game_language_instruction()
+                + " Use concise, natural, complete and grammatically correct sentences in "
+                "that language; apply compatible host guidance throughout. Describe what "
+                "happened, not just the attempt, and make each player's outcome stand alone. "
+                "Use plain text without markup or name labels. Use short, coherent paragraphs "
+                "separated by blank lines for longer text; start a new paragraph when the "
+                "focus, scene, or consequence changes. Do not pad or put every sentence on a "
+                "separate line. Translate disconnect/return annotations into in-world "
+                "absence or return; keep technical status out of the story."
+            ),
+        }
+
     async def _request(
         self,
         prompt: dict[str, str],
@@ -711,23 +783,7 @@ class LLMContextManager:
         opening_names: tuple[str, ...] | None = None,
     ) -> Any:
         """Run a single LLM request, optionally compacting history and remembering the result."""
-        if issubclass(schema, RoundResolution):
-            prompt = {
-                **prompt,
-                "content": prompt["content"]
-                + (
-                    "\n"
-                    + self._game_language_instruction()
-                    + " Use concise, natural, complete and grammatically correct sentences in "
-                    "that language; apply compatible host guidance throughout. Describe what "
-                    "happened, not just the attempt, and make each player's outcome stand alone. "
-                    "Use plain text without markup or name labels. Use short, coherent paragraphs "
-                    "separated by blank lines for longer text; start a new paragraph when the "
-                    "focus, scene, or consequence changes. Do not pad or put every sentence on a "
-                    "separate line. Translate disconnect/return annotations into in-world "
-                    "absence or return; keep technical status out of the story."
-                ),
-            }
+        prompt = self._prepare_request_prompt(prompt, schema)
         await self.discover_context_window()
         if include_history:
             await self._compact_if_needed(prompt, schema, kind)
