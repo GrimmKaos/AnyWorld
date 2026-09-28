@@ -105,7 +105,6 @@ def test_websocket_and_resolution_schemas_are_strict() -> None:
     """Validate strict websocket and resolution schemas."""
     payload = ClientPayload(event_type="action", data={"action": "wait"})
     resolution = RoundResolution(
-        round_title=None,
         global_narrative="Time passes.",
         player_resolutions={"Alice": "Alice waits."},
     )
