@@ -42,8 +42,8 @@ def test_injected_classification_preserves_rolls_and_original_plan():
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("audit_passes", [True, False])
-def test_chance_audit_restores_raw_narrative_before_commit_or_failure(audit_passes):
+@pytest.mark.parametrize("preserved,corrections", [(True, []), (False, ["The event is missing."])])
+def test_chance_audit_restores_raw_narrative_before_commit_or_failure(preserved, corrections):
     """An audit response must never replace the narrative's exact JSON prefix."""
 
     async def run():
@@ -57,7 +57,11 @@ def test_chance_audit_restores_raw_narrative_before_commit_or_failure(audit_pass
             response = await original_parse(**kwargs)
             message = response.choices[0].message
             if kwargs["response_format"] is AuditVerdict:
-                message.parsed = AuditVerdict(preserved=audit_passes, corrections=[])
+                message.parsed = AuditVerdict(preserved=preserved, corrections=corrections)
+                audit_data = json.loads(kwargs["messages"][-1]["content"])
+                assert audit_data["authoritative_event_results"] == [check.model_dump()]
+                assert audit_data["proposed_round"] == json.loads(narrative[0])
+                assert [entry["role"] for entry in kwargs["messages"]] == ["system", "user"]
             message.content = json.dumps(message.parsed.model_dump(), indent=2)
             if kwargs["response_format"] is not AuditVerdict:
                 narrative.append(message.content)
@@ -76,7 +80,7 @@ def test_chance_audit_restores_raw_narrative_before_commit_or_failure(audit_pass
             occurred=True,
         )
         try:
-            if audit_passes:
+            if preserved and not corrections:
                 await manager.generate_resolution({"Alice": "Wait."}, chance_events=[check])
                 assert manager.history[-1]["content"] == narrative[0]
             else:

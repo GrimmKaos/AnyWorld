@@ -218,7 +218,7 @@ def test_planner_validates_private_source_and_resolution_receives_authoritative_
         prompt = client.calls[-1]["messages"][-1]["content"]
         assert '"occurred": false' in prompt
         assert "not action-quality dice" in prompt
-        assert "trigger actually occurs" in prompt
+        assert "conditional events apply when their condition occurs" in prompt
         assert len(client.calls) == 3
         await manager.close()
 
@@ -628,6 +628,37 @@ def test_unrelated_private_guidance_cannot_hide_public_action_roll(tmp_path, mon
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("provider", ["compatible", "openai"])
+@pytest.mark.parametrize("source", ["", RULE, "Keep the story moving quickly."])
+def test_stray_hidden_inventory_label_preserves_no_roll_without_retry(provider, source):
+    async def run():
+        settings.llm.provider = provider
+        draft = DicePlan(
+            rolls={"Arxs": False, "Host": True},
+            hidden_rolls=["Arxs"],
+            hidden_roll_sources={"Arxs": source},
+        )
+        client = FakeClient(draft)
+        manager = LLMContextManager(client)
+        manager.set_genesis(
+            "A quiet storeroom with a locked door.",
+            "Add a 20% chance per round that a dwarf interrupts a player's action.\n"
+            "Keep the story moving quickly.",
+        )
+        plan = await manager.plan_dice(
+            {"Arxs": "Inspect my inventory", "Host": "Force the locked door open"}
+        )
+        assert plan.rolls == {"Arxs": False, "Host": True}
+        assert plan.hidden_rolls == [] and plan.hidden_roll_sources == {}
+        assert len(plan.chance_events) == 1
+        assert len(client.calls) == 1
+        assert manager.game_usage.retries == 0
+        assert draft.hidden_rolls == ["Arxs"]
+        await manager.close()
+
+    asyncio.run(run())
+
+
 def test_confused_hidden_audit_cannot_replan_public_rolls_or_per_round_events():
     async def run():
         guidance = 'Reply in caveman-style language only. Example: "Dwarf hit player."'
@@ -843,7 +874,7 @@ def test_nonblocking_event_prompt_preserves_the_original_action():
         )
         prompt = client.calls[0]["messages"][-1]["content"]
         assert "Chance effects are modifiers, not replacements for player actions" in prompt
-        assert "does not stop them from looking out a window" in prompt
+        assert "resolve the intended action alongside the effect" in prompt
         await manager.close()
 
     asyncio.run(run())

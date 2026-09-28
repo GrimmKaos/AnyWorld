@@ -42,7 +42,7 @@ def test_schema_cleanup_preserves_player_names_that_are_schema_keywords(base, fi
     "result",
     [
         DicePlan(rolls={"Other": True}, hidden_rolls=[]),
-        DicePlan(rolls={"Alice": False}, hidden_rolls=["Alice"]),
+        DicePlan(rolls={"Alice": False}, hidden_rolls=["Other"]),
         DicePlan(rolls={"Alice": True}, hidden_rolls=["Alice", "Alice"]),
     ],
 )

@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from core.schemas import (
     AuditVerdict,
+    ChanceEventResult,
     ConditionalCheckAudit,
     ContextSummary,
     DicePlan,
@@ -86,13 +87,13 @@ async def audit_planned_checks(
 
 async def audit_chance_outcomes(
     parse: Parse,
-    messages: list[dict[str, str]],
     result: RoundResolution,
+    events: list[ChanceEventResult],
     *,
     repair_attempt: int,
 ) -> None:
     """Reject omitted event effects before publishing or remembering a round."""
-    audit_messages = prompts.chance_outcomes_audit_prompt(messages, result)
+    audit_messages = prompts.chance_outcomes_audit_prompt(result, events)
     audit = await parse(audit_messages, AuditVerdict, "event_audit", repair_attempt=repair_attempt)
     if not audit.preserved:
         raise LLMResolutionError(

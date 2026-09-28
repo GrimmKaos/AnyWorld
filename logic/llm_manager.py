@@ -290,6 +290,18 @@ class LLMContextManager:
         for repair in range(settings.llm.max_retries + 1):
             result = await self._parse(messages, schema, kind, repair_attempt=repair)
             try:
+                if isinstance(result, DicePlan):
+                    # A stray privacy label cannot create a roll the planner declined.
+                    # Leave unknown names and duplicates for semantic validation.
+                    result = result.model_copy(
+                        update={
+                            "hidden_rolls": [
+                                name
+                                for name in result.hidden_rolls
+                                if result.rolls.get(name) is not False
+                            ]
+                        }
+                    )
                 check_semantics(result, expected_names)
                 if isinstance(result, DicePlan):
                     try:
@@ -361,7 +373,10 @@ class LLMContextManager:
                         narrative_response = self._last_response_text
                         try:
                             await auditing.audit_chance_outcomes(
-                                self._parse, messages, result, repair_attempt=repair
+                                self._parse,
+                                result,
+                                private_events,
+                                repair_attempt=repair,
                             )
                         finally:
                             self._last_response_text = narrative_response
