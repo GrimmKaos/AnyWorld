@@ -44,7 +44,11 @@ def test_raw_logging_precedes_sdk_parsing_and_does_not_change_requests(
                 {
                     "index": 0,
                     "finish_reason": "stop",
-                    "message": {"role": "assistant", "content": content},
+                    "message": {
+                        "role": "assistant",
+                        "content": content,
+                        "reasoning_content": "A private chain of thought.",
+                    },
                 }
             ],
         },
@@ -54,7 +58,10 @@ def test_raw_logging_precedes_sdk_parsing_and_does_not_change_requests(
     if response_kind == "http_error":
         body = '{"error":{"message":"PRIVATE_DIAGNOSTIC","type":"server_error"}}'
 
+    sent_requests = []
+
     def handler(request):
+        sent_requests.append(request.content.decode("utf-8"))
         request_json = json.loads(request.content)
         assert "repeat_penalty" not in request_json
         assert "presence_penalty" not in request_json
@@ -99,7 +106,21 @@ def test_raw_logging_precedes_sdk_parsing_and_does_not_change_requests(
     if enabled:
         record = json.loads(files[0].read_text(encoding="utf-8"))
         assert record["body"] == body
-        assert set(record) == {"timestamp", "status_code", "body"}
+        assert record["request"]["method"] == "POST"
+        assert record["request"]["url"] == "/v1/chat/completions"
+        assert record["request"]["body"] == sent_requests[0]
+        assert record["thinking_sequences"] == (
+            []
+            if response_kind == "http_error"
+            else [{"choice_index": 0, "content": "A private chain of thought."}]
+        )
+        assert set(record) == {
+            "timestamp",
+            "status_code",
+            "request",
+            "body",
+            "thinking_sequences",
+        }
     else:
         assert not (tmp_path / ".debug").exists()
     assert "PRIVATE_DIAGNOSTIC" not in caplog.text
@@ -121,3 +142,24 @@ def test_debug_disk_failure_does_not_break_response(tmp_path):
         assert response.text == "raw"
 
     asyncio.run(run())
+
+
+def test_request_is_logged_even_when_no_response_arrives(tmp_path):
+    """Keep a sent request diagnostic when the backend times out or disconnects."""
+    logger = RawResponseLogger(tmp_path / ".debug" / "llm")
+    request = httpx.Request(
+        "POST",
+        "http://model.invalid/v1/chat/completions",
+        content=b'{"messages":[{"role":"user","content":"PRIVATE"}]}',
+    )
+
+    async def run():
+        await logger.capture_request(request)
+
+    asyncio.run(run())
+    files = list((tmp_path / ".debug" / "llm").glob("*.json"))
+    assert len(files) == 1
+    record = json.loads(files[0].read_text(encoding="utf-8"))
+    assert record["status_code"] is None
+    assert record["body"] is None
+    assert record["request"]["body"] == request.content.decode("utf-8")

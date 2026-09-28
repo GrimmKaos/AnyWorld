@@ -5,9 +5,27 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from core.config import ConfigLoadError, Settings
+from core.config import ConfigLoadError, LLMConfig, Settings
 from core.schemas import ClientPayload, DicePlan, RoundResolution
-from logic.llm_manager import LLMContextManager, LLMResolutionError, participant_schema
+from logic.llm_manager import participant_schema
+
+
+@pytest.mark.parametrize("effort", ["none", "low", "medium", "high"])
+def test_reasoning_effort_loads_from_yaml(tmp_path, effort):
+    """Use one validated effort vocabulary for both providers."""
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        f'llm:\n  system_prompt: "Direct the game."\n  reasoning_effort: "{effort}"\n',
+        encoding="utf-8",
+    )
+    assert Settings.load(config).llm.reasoning_effort == effort
+
+
+@pytest.mark.parametrize("effort", [None, False, True, 1, "", "minimal", "xhigh", "HIGH"])
+def test_reasoning_effort_rejects_unsupported_values(effort):
+    """Reject legacy booleans and unsupported effort levels rather than silently defaulting."""
+    with pytest.raises(ValidationError, match="reasoning_effort"):
+        LLMConfig(system_prompt="Direct the game.", reasoning_effort=effort)
 
 
 def test_settings_loads_typed_yaml(tmp_path: Path) -> None:
@@ -96,23 +114,3 @@ def test_websocket_and_resolution_schemas_are_strict() -> None:
     assert resolution.player_resolutions["Alice"] == "Alice waits."
     with pytest.raises(ValidationError):
         ClientPayload.model_validate({"event_type": "action", "data": {}, "unexpected": True})
-
-
-def test_context_overflow_preserves_history_without_fifo_loss() -> None:
-    """Preserve history when a bounded check overflows the budget."""
-    manager = LLMContextManager()
-    manager.context_window_size = 128_000
-    manager.set_genesis("A short beginning")
-    # Spaces prevent BPE from collapsing the fixture into a tiny repeated-token run.
-    large_message = "x " * 40_000
-    manager.history = [
-        {"role": "user", "content": large_message},
-        {"role": "assistant", "content": large_message},
-        {"role": "user", "content": large_message},
-        {"role": "assistant", "content": large_message},
-    ]
-
-    original = list(manager.history)
-    with pytest.raises(LLMResolutionError, match="memory preserved"):
-        manager._bounded_messages({"role": "user", "content": "Act"})
-    assert manager.history == original

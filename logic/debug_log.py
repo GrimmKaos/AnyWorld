@@ -13,30 +13,97 @@ LOGGER = logging.getLogger(__name__)
 
 
 class RawResponseLogger:
-    """Save completion response bodies only; never request headers or credentials."""
+    """Save completion requests and responses; never headers or credentials."""
 
     def __init__(self, directory: Path = Path(".debug/llm")) -> None:
         """Select a private directory outside the served static tree."""
         self.directory = directory
+
+    async def capture_request(self, request: httpx.Request) -> None:
+        """Persist the sent completion body before waiting for a response."""
+        if not request.url.path.endswith("/chat/completions"):
+            return
+        try:
+            body = request.content
+        except (httpx.RequestNotRead, RuntimeError):
+            body = b""
+        timestamp = datetime.now(timezone.utc)
+        filename = f"{timestamp:%Y%m%dT%H%M%S.%fZ}-{uuid4().hex}.json"
+        request_record = {
+            "method": request.method,
+            "url": request.url.path,
+            "body": body.decode("utf-8", errors="replace"),
+        }
+        record = {
+            "timestamp": timestamp.isoformat(),
+            "status_code": None,
+            "request": request_record,
+            "body": None,
+            "thinking_sequences": [],
+        }
+        write = asyncio.create_task(asyncio.to_thread(self._write, filename, record))
+        request.extensions["anyworld_debug_request"] = request_record
+        request.extensions["anyworld_debug_filename"] = filename
+        request.extensions["anyworld_debug_write"] = write
+        try:
+            await asyncio.shield(write)
+        except asyncio.CancelledError:
+            await write
+            raise
 
     async def capture(self, response: httpx.Response) -> None:
         """Record even malformed/rejected response bodies without changing SDK input."""
         if not response.request.url.path.endswith("/chat/completions"):
             return
         body = await response.aread()
+        write = response.request.extensions.get("anyworld_debug_write")
+        if isinstance(write, asyncio.Task):
+            await asyncio.shield(write)
+        filename = response.request.extensions.get("anyworld_debug_filename")
         timestamp = datetime.now(timezone.utc)
         record = {
             "timestamp": timestamp.isoformat(),
             "status_code": response.status_code,
+            "request": response.request.extensions.get("anyworld_debug_request"),
             "body": body.decode("utf-8", errors="replace"),
+            "thinking_sequences": self._thinking_sequences(body),
         }
-        filename = f"{timestamp:%Y%m%dT%H%M%S.%fZ}-{uuid4().hex}.json"
+        if not isinstance(filename, str):
+            filename = f"{timestamp:%Y%m%dT%H%M%S.%fZ}-{uuid4().hex}.json"
         write = asyncio.create_task(asyncio.to_thread(self._write, filename, record))
         try:
             await asyncio.shield(write)
         except asyncio.CancelledError:
             await write
             raise
+
+    @staticmethod
+    def _thinking_sequences(body: bytes) -> list[dict[str, object]]:
+        """Extract provider reasoning fields while retaining the complete raw body."""
+        try:
+            payload = json.loads(body)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return []
+        if not isinstance(payload, dict):
+            return []
+        sequences: list[dict[str, object]] = []
+        choices = payload.get("choices")
+        if not isinstance(choices, list):
+            return sequences
+        for index, choice in enumerate(choices):
+            if not isinstance(choice, dict):
+                continue
+            message = choice.get("message")
+            delta = choice.get("delta")
+            source = message if isinstance(message, dict) else delta
+            if not isinstance(source, dict):
+                continue
+            thinking = source.get("reasoning_content")
+            if thinking is None:
+                thinking = source.get("thinking")
+            if isinstance(thinking, str) and thinking:
+                sequences.append({"choice_index": index, "content": thinking})
+        return sequences
 
     def _write(self, filename: str, record: dict) -> None:
         """Keep disk failures nonfatal and private data out of console logs."""

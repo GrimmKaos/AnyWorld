@@ -48,6 +48,11 @@ from logic.debug_log import RawResponseLogger
 
 logger = logging.getLogger(__name__)
 
+# llama.cpp counts hidden reasoning in max_tokens, as does OpenAI's completion cap.
+# Reserve enough room for the reasoning sequence before the configured visible output.
+_THINKING_OUTPUT_BUDGETS = {"none": 0, "low": 2_048, "medium": 4_096, "high": 8_192}
+_NO_THINKING_KINDS = frozenset({"title", "dice_audit", "event_audit", "summary_audit"})
+
 
 class LLMResolutionError(RuntimeError):
     """Raised when the LLM cannot produce valid structured output."""
@@ -237,8 +242,12 @@ class LLMContextManager:
         if settings.llm.provider == "compatible":
             client_options["base_url"] = settings.llm.endpoint
         if settings.llm.debug_raw_responses:
+            raw_logger = RawResponseLogger()
             client_options["http_client"] = DefaultAsyncHttpxClient(
-                event_hooks={"response": [RawResponseLogger().capture]}
+                event_hooks={
+                    "request": [raw_logger.capture_request],
+                    "response": [raw_logger.capture],
+                }
             )
         return AsyncOpenAI(**client_options)
 
@@ -535,6 +544,20 @@ class LLMContextManager:
         return getattr(settings.llm, f"{cap_kind}_output_tokens")
 
     @staticmethod
+    def _reasoning_effort(kind: str = "round") -> str:
+        """Disable hidden reasoning for short metadata and audit requests."""
+        return "none" if kind in _NO_THINKING_KINDS else settings.llm.reasoning_effort
+
+    @classmethod
+    def _thinking_output_limit(cls, kind: str = "round") -> int:
+        """Reserve completion tokens for hidden reasoning on both providers."""
+        return _THINKING_OUTPUT_BUDGETS[cls._reasoning_effort(kind)]
+
+    def _request_output_limit(self, kind: str) -> int:
+        """Return the backend cap, including visible output and hidden reasoning."""
+        return self._output_limit(kind) + self._thinking_output_limit(kind)
+
+    @staticmethod
     @lru_cache(maxsize=64)
     def _schema_text(schema: type[BaseModel]) -> str:
         """Return the compact JSON schema text for a response model."""
@@ -548,7 +571,7 @@ class LLMContextManager:
 
     def _fits(self, count: int, kind: str) -> bool:
         """Return whether a token count fits within the context budget."""
-        return count + self._output_limit(kind) + settings.llm.token_safety_margin <= (
+        return count + self._request_output_limit(kind) + settings.llm.token_safety_margin <= (
             self.context_window_size
         )
 
@@ -566,14 +589,20 @@ class LLMContextManager:
         return base[:-3] if base.endswith("/v1") else base
 
     @staticmethod
-    def _template_options() -> dict[str, Any]:
+    def _template_options(kind: str = "round") -> dict[str, Any]:
         """Use the same explicit llama.cpp template options for counting and generation."""
-        if settings.llm.provider == "compatible" and settings.llm.enable_thinking is not None:
-            return {"chat_template_kwargs": {"enable_thinking": settings.llm.enable_thinking}}
+        if settings.llm.provider == "compatible":
+            effort = LLMContextManager._reasoning_effort(kind)
+            return {
+                "chat_template_kwargs": {
+                    "enable_thinking": effort != "none",
+                    "reasoning_effort": effort,
+                }
+            }
         return {}
 
     async def _input_tokens(
-        self, messages: list[dict[str, str]], schema: type[BaseModel] | None
+        self, messages: list[dict[str, str]], schema: type[BaseModel] | None, kind: str = "round"
     ) -> int:
         """Reuse formatted message counts across schemas with the same tokenizer identity."""
         identity = (
@@ -582,7 +611,7 @@ class LLMContextManager:
             settings.llm.model_name,
             settings.llm.tokenizer_encoding,
             self._template_identity,
-            self._template_options(),
+            self._template_options(kind),
             messages,
         )
         key = sha256(json.dumps(identity, ensure_ascii=False).encode("utf-8")).digest()
@@ -590,7 +619,7 @@ class LLMContextManager:
             count, method = self._request_counts[key]
             self._request_counts.move_to_end(key)
         else:
-            count = await self._uncached_message_tokens(messages)
+            count = await self._uncached_message_tokens(messages, kind)
             method = self.token_count_method
             # Retry unavailable tokenization rather than pinning a backend failure.
             if method != "conservative UTF-8 estimate":
@@ -604,7 +633,9 @@ class LLMContextManager:
                 self.token_count_method += " + schema allowance"
         return count
 
-    async def _uncached_message_tokens(self, messages: list[dict[str, str]]) -> int:
+    async def _uncached_message_tokens(
+        self, messages: list[dict[str, str]], kind: str = "round"
+    ) -> int:
         """Count formatted messages without a response-schema allowance."""
         if settings.llm.provider == "openai" and not self._encoding_loaded:
             self._encoding_loaded = True
@@ -621,7 +652,7 @@ class LLMContextManager:
                 http = await self._http_client()
                 rendered = await http.post(
                     self._backend_base() + "/apply-template",
-                    json={"messages": messages, **self._template_options()},
+                    json={"messages": messages, **self._template_options(kind)},
                 )
                 rendered.raise_for_status()
                 prompt = rendered.json()["prompt"]
@@ -1156,13 +1187,19 @@ class LLMContextManager:
         repair_attempt: int = 0,
     ) -> Any:
         """Measure each attempt, including SDK-compatible transient retries."""
-        count = await self._input_tokens(messages, schema)
+        count = await self._input_tokens(messages, schema, kind)
         if not self._fits(count, kind):
             raise LLMResolutionError(
                 "Request exceeds the context budget; history and durable memory were preserved."
             )
+        retry_backoff = sum(
+            min(0.5 * 2**attempt, 8.0) for attempt in range(settings.llm.max_retries)
+        )
+        overall_timeout = (
+            settings.llm.request_timeout_seconds * (settings.llm.max_retries + 1) + retry_backoff
+        )
         try:
-            async with asyncio.timeout(settings.llm.request_timeout_seconds):
+            async with asyncio.timeout(overall_timeout):
                 for attempt in range(settings.llm.max_retries + 1):
                     try:
                         return await self._parse_attempt(
@@ -1199,16 +1236,23 @@ class LLMContextManager:
         response = None
         error = None
         cap_key = "max_tokens" if settings.llm.provider == "compatible" else "max_completion_tokens"
+        effort = self._reasoning_effort(kind)
+        template_options = self._template_options(kind)
+        retry_backoff = sum(
+            min(0.5 * 2**attempt, 8.0) for attempt in range(settings.llm.max_retries)
+        )
+        overall_timeout = (
+            settings.llm.request_timeout_seconds * (settings.llm.max_retries + 1) + retry_backoff
+        )
         try:
-            async with asyncio.timeout(settings.llm.request_timeout_seconds):
+            async with asyncio.timeout(overall_timeout):
                 response = await self.client.beta.chat.completions.parse(
                     model=settings.llm.model_name,
                     messages=messages,
                     response_format=schema,
-                    **(
-                        {"extra_body": self._template_options()} if self._template_options() else {}
-                    ),
-                    **{cap_key: self._output_limit(kind)},
+                    reasoning_effort=effort,
+                    **({"extra_body": template_options} if template_options else {}),
+                    **{cap_key: self._request_output_limit(kind)},
                 )
             choice = response.choices[0]
             if getattr(choice, "finish_reason", None) == "length":
@@ -1259,6 +1303,9 @@ class LLMContextManager:
                 "repair_attempt": repair_attempt,
                 "attempt": attempt + repair_attempt + 1,
                 "estimated_input_tokens": count,
+                "configured_output_tokens": self._output_limit(kind),
+                "thinking_output_tokens": self._thinking_output_limit(kind),
+                "request_output_tokens": self._request_output_limit(kind),
                 "counting_method": self.token_count_method,
                 "input_tokens": counter(usage, "prompt_tokens"),
                 "completion_tokens": counter(usage, "completion_tokens"),
@@ -1298,12 +1345,12 @@ class LLMContextManager:
         try:
             while True:
                 messages = [*self._fixed_messages(kind), *self.history, prompt]
-                count = await self._input_tokens(messages, schema)
+                count = await self._input_tokens(messages, schema, kind)
                 fits = self._fits(count, kind)
                 history_limit = settings.llm.history_round_limit
                 checkpoint_due = history_limit is not None and len(self.history) > 2 * history_limit
                 target_fits = (
-                    count + self._output_limit(kind) + settings.llm.token_safety_margin
+                    count + self._request_output_limit(kind) + settings.llm.token_safety_margin
                     <= self.context_window_size * settings.llm.compaction_target_fraction
                 )
                 if (
@@ -1350,7 +1397,7 @@ class LLMContextManager:
                         },
                     ]
                     if not self._fits(
-                        await self._input_tokens(candidate, summary_schema)
+                        await self._input_tokens(candidate, summary_schema, "summary")
                         + self._output_limit("summary")
                         + 512,
                         "summary",

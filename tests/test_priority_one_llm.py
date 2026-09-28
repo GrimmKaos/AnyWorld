@@ -105,19 +105,27 @@ def memory():
         ("compatible", "max_tokens"),
     ],
 )
-def test_every_request_caps_output_and_counts_backend_template(schema, kind, provider, cap_key):
+@pytest.mark.parametrize("effort", ["none", "low", "medium", "high"])
+def test_every_request_caps_output_and_counts_backend_template(
+    schema, kind, provider, cap_key, effort
+):
     """Verify every request caps output and counts the backend template."""
 
     async def run():
         settings.llm.provider = provider
-        settings.llm.enable_thinking = False
+        settings.llm.reasoning_effort = effort
         client = FakeClient()
         manager = LLMContextManager(client)
+        manager.context_window_size = 32_768
         seen = []
 
         def backend(request):
             seen.append(request.url.path)
             if request.url.path == "/apply-template":
+                assert json.loads(request.content)["chat_template_kwargs"] == {
+                    "enable_thinking": effort != "none",
+                    "reasoning_effort": effort,
+                }
                 return httpx.Response(200, json={"prompt": "MODEL TEMPLATE + multilingual 日本語"})
             if request.url.path == "/tokenize":
                 assert json.loads(request.content)["add_special"] is True
@@ -127,18 +135,46 @@ def test_every_request_caps_output_and_counts_backend_template(schema, kind, pro
         manager._http = httpx.AsyncClient(transport=httpx.MockTransport(backend))
         await manager._parse([{"role": "user", "content": "Act"}], schema, kind)
         request = client.calls[0]
-        assert request[cap_key] == getattr(settings.llm, f"{kind}_output_tokens")
+        assert request["reasoning_effort"] == effort
+        visible_cap = getattr(settings.llm, f"{kind}_output_tokens")
+        thinking_cap = {"none": 0, "low": 2_048, "medium": 4_096, "high": 8_192}[effort]
+        assert request[cap_key] == visible_cap + thinking_cap
         assert (
             "max_tokens" if cap_key == "max_completion_tokens" else "max_completion_tokens"
         ) not in request
         if provider == "openai":
             assert "extra_body" not in request
         if provider == "compatible":
-            assert request["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
+            assert request["extra_body"] == {
+                "chat_template_kwargs": {
+                    "enable_thinking": effort != "none",
+                    "reasoning_effort": effort,
+                }
+            }
             assert seen == ["/apply-template", "/tokenize"]
             assert manager.token_count_method.startswith("backend")
         await manager.close()
         assert client.closed
+
+    asyncio.run(run())
+
+
+def test_title_request_disables_reasoning_even_when_game_effort_is_high():
+    """Short metadata requests keep their visible output budget for the result."""
+
+    async def run():
+        settings.llm.provider = "openai"
+        settings.llm.reasoning_effort = "high"
+        client = FakeClient()
+        manager = LLMContextManager(client)
+        await manager._parse(
+            [{"role": "user", "content": "Give the title."}], ScenarioTitle, "title"
+        )
+        request = client.calls[0]
+        assert request["reasoning_effort"] == "none"
+        assert request["max_completion_tokens"] == min(128, settings.llm.initial_output_tokens)
+        assert "extra_body" not in request
+        await manager.close()
 
     asyncio.run(run())
 
@@ -411,6 +447,41 @@ def test_request_timeout_preserves_history():
         with pytest.raises(LLMResolutionError, match="failed"):
             await manager.generate_scenario_title()
         assert manager.history == []
+
+    asyncio.run(run())
+
+
+def test_slow_transient_failure_can_reach_a_retry():
+    """The overall parse deadline includes each attempt and retry backoff."""
+
+    async def run():
+        settings.llm.request_timeout_seconds = 0.05
+        settings.llm.max_retries = 1
+        client = FakeClient()
+        calls = 0
+
+        async def transient_then_success(**kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                await asyncio.sleep(0.04)
+                from openai import InternalServerError
+
+                raise InternalServerError(
+                    "temporary failure",
+                    response=httpx.Response(
+                        500, request=httpx.Request("POST", "http://test.invalid")
+                    ),
+                    body=None,
+                )
+            return await FakeClient.parse(client, **kwargs)
+
+        client.beta.chat.completions.parse = transient_then_success
+        manager = LLMContextManager(client)
+        result = await manager.generate_scenario_title()
+        assert result == "The gate"
+        assert calls == 2
+        await manager.close()
 
     asyncio.run(run())
 
