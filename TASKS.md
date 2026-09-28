@@ -32,7 +32,7 @@ Existing history/benchmark observations are retained and were not independently 
   - Product follow-up (S01): let the host choose cadence, eligibility, percentage and shared/per-player occurrence explicitly, with a plain-language preview. Show ambiguous conditions before Start rather than silently discarding them.
   - Acceptance: Qualified per-round rules never fire while ineligible; cover mixed clauses, alternate/language wording, shared occurrences and 0/100% boundaries.
 
-- [ ] **P1 - Separate public telemetry from private inference diagnostics (R02)** - logic/llm_manager.py:usage_snapshot; logic/engine.py:_publish_usage.
+- [ ] **P1 - Separate public telemetry from private inference diagnostics (R02)** - logic/llm_manager.py:usage_snapshot; logic/engine.py:\_publish_usage.
   - All players receive round_by_kind and last_request; event_audit reveals that at least one private event occurred. Keep public aggregate usage but project private phase diagnostics to the host only; explicitly decide residual count/timing leakage.
   - Product follow-up (S07): provide a host-only diagnostics panel and a coarse working/paused indicator for players. Label tokenizer estimates separately from provider usage and avoid invented billing precision.
   - Acceptance: Inspect public WebSocket payloads for hidden audit categories, including failed rounds; preserve useful host diagnostics.
@@ -50,11 +50,11 @@ Existing history/benchmark observations are retained and were not independently 
   - Re-run the full Python suite and Node client tests after the conditional-occurrence changes recorded by QWEN-REVIEW.md; reconcile any stale `pytest-output.txt` failure before treating the WIP as complete.
   - Acceptance: the full offline test suite, client tests, Black and Flake8 pass, and the conditional-occurrence implementation and regression coverage land coherently.
 
-- [ ] **P1 - Commit opening memory with accepted game state (R04)** - logic/llm_manager.py:_request; logic/lobby.py:_prepare_start.
+- [ ] **P1 - Commit opening memory with accepted game state (R04)** - logic/llm_manager.py:\_request; logic/lobby.py:\_prepare_start.
   - Opening history is remembered before transcript.start and engine commit. A disk/filename failure returns to the lobby while retaining unpublished narrative; retry then consumes phantom facts. Stage or roll back resolver state with the game transition.
   - Acceptance: Injected transcript failure then Start retry retains exactly one accepted opening and the current party; End stays terminal; post-commit delivery failure never rolls back committed rounds.
 
-- [ ] **P1 - Recover from failed mandatory and optional compaction (R05)** - logic/llm_manager.py:_compact_if_needed; logic/llm/auditing.py:audit_summary.
+- [ ] **P1 - Recover from failed mandatory and optional compaction (R05)** - logic/llm_manager.py:\_compact_if_needed; logic/llm/auditing.py:audit_summary.
   - Retries currently repeat the same summary strategy. Defer a rejected optional checkpoint when the original request fits; use bounded correction-aware repair/smaller prefixes for mandatory compaction and useful host failure diagnostics.
   - Acceptance: Audit rejection, expanding summaries and later-pass failures preserve facts and terminate predictably; no unnecessary pause for optional work and no FIFO loss.
 
@@ -66,7 +66,7 @@ Existing history/benchmark observations are retained and were not independently 
   - Exact guidance fragments and English number patterns miss short/paraphrased/multilingual secrets and can collide with valid public rolls. Minimize secret exposure and add a measured adversarial leakage corpus.
   - Acceptance: Cover short secrets, paraphrases and equal public/private values; record false positives/negatives and never claim model/regex checks guarantee secrecy.
 
-- [ ] **P2 - Retain action drafts until server acceptance (R08)** - static/js/app.js:action submit handler; logic/engine.py:_submit_action.
+- [ ] **P2 - Retain action drafts until server acceptance (R08)** - static/js/app.js:action submit handler; logic/engine.py:\_submit_action.
   - The input clears on send, before validation/acceptance. Keep pending text until echo/snapshot acknowledgment and add session/round-scoped idempotency if resending.
   - Product follow-up (S05): show accepted versus pending status and retain drafts through budget rejection or connection loss without allowing a forgotten saved identity to claim a character by public name alone.
   - Acceptance: Budget rejection and lost connection preserve text; retries cannot duplicate an accepted action or replay it next round.
@@ -89,7 +89,7 @@ Existing history/benchmark observations are retained and were not independently 
   - Review (2026-09-27): sends awaited under effects_lock can delay turn delivery and End by the five-second send plus two-second close timeouts. Use bounded ordered per-client queues with prompt presence updates on overflow/failure.
   - Review 2026-09-28: bound queue bytes and writer tasks; failure must promptly remove the current socket and update presence without marking a replacement disconnected.
 
-- [ ] **P2 - Budget actual summary audits before spending inference (R12)** - logic/llm_manager.py:_compact_if_needed; logic/llm/prompts.py:summary_audit_prompt.
+- [ ] **P2 - Budget actual summary audits before spending inference (R12)** - logic/llm_manager.py:\_compact_if_needed; logic/llm/prompts.py:summary_audit_prompt.
   - Replace the fixed extra 512-token proxy with the actual audit framing/schema reserve and verify candidate size. Assess useful shrinkage with the upcoming formatted request, keeping conservative estimates labeled.
   - Acceptance: Near-limit summaries do not waste avoidable calls on unaffordable audits; all final requests remain checked and durable memory is retained on failure.
 
@@ -100,11 +100,7 @@ Existing history/benchmark observations are retained and were not independently 
   - Review 2026-09-28: add recoverable capability backoff, an aggregate preflight/tokenizer deadline and safe single-flight counting; check cache byte retention as well as entry limits. Never hide overflow or permanently cache failures.
   - Decide whether preflight tokenizer outages should use the same labelled conservative estimate as inference or remain a documented hard failure; align the behavior or explain the intentional divergence.
 
-- [ ] **P2 - Fail fast on a missing OpenAI API key (Q03)** - app.py; core/config.py.
-  - When `provider: openai` is selected without `OPENAI_API_KEY`, reject startup with a clear configuration error instead of allowing the first inference to fail with a late 401.
-  - Acceptance: compatible-provider startup remains unaffected, OpenAI startup fails before serving when the key is absent, and the error does not disclose the key value.
-
-- [ ] **P2 - Validate compact retained records and preserve adjudication provenance (R14)** - logic/llm_manager.py:generate_resolution, _request; logic/llm/prompts.py.
+- [ ] **P2 - Validate compact retained records and preserve adjudication provenance (R14)** - logic/llm_manager.py:generate_resolution, \_request; logic/llm/prompts.py.
   - Review 2026-09-28: opening_memory_prompt and round_memory_prompt already avoid retaining full reusable instructions. The earlier 2,449-character request example is historical, not current behavior.
   - Retain compact actions, trusted presence, round IDs and relevant authoritative adjudication alongside outcomes; current action records omit dice/event provenance. Remove redundant current-state text only when already present in authoritative context.
   - Acceptance: measured request/retained-token reduction without privacy, injury, inventory or causal regressions. Implementation is present in part; quality/performance acceptance remains unverified.
@@ -123,11 +119,11 @@ Existing history/benchmark observations are retained and were not independently 
   - Experiment (2026-09-15): shorter prompts did not consistently lower total cost and a candidate missed hidden-roll classification. Full planner remains default. Configured Gemma thinking is disabled to reserve bounded output for structured answers. Safe-action overrolling remains a live-model limitation; no one-call or deterministic bypass was adopted.
   - Review 2026-09-28: hidden-source classification currently adds one serial LLM call per hidden player. Evaluate a bounded per-player batch with sufficient facts, rather than assuming every round uses only two calls.
 
-- [ ] **P2 - Share participant and presence projection with action preflight (R17)** - logic/engine.py:_submit_action, _launch_round_locked, _resolve_round_work.
+- [ ] **P2 - Share participant and presence projection with action preflight (R17)** - logic/engine.py:\_submit_action, \_launch_round_locked, \_resolve_round_work.
   - Preflight includes persistently absent players excluded from actual resolution, and omits later presence annotations. Reuse an immutable projection and revalidate relevant presence changes; account for later dice/event context.
   - Acceptance: No false rejection from permanently absent participants or unexpected metadata overflow; preserve join order and simultaneous actions.
 
-- [ ] **P2 - Reject malformed auth fields cleanly and clarify retry accounting (R18)** - logic/lobby.py:_authenticate; core/schemas.py; logic/llm_manager.py; logic/usage.py.
+- [ ] **P2 - Reject malformed auth fields cleanly and clarify retry accounting (R18)** - logic/lobby.py:\_authenticate; core/schemas.py; logic/llm_manager.py; logic/usage.py.
   - Non-ASCII reconnect_token reaches string compare_digest and raises TypeError. Bound/validate fields with strict event schemas; distinguish semantic failures and whole-round retries from provider retry counters.
   - Acceptance: Malformed fields fail without tracebacks/state changes; all retry layers and semantic rejection are identifiable while unreported tokens stay unknown.
 
@@ -140,7 +136,7 @@ Existing history/benchmark observations are retained and were not independently 
   - Verify minimum dependencies support APIs used, including beta.chat.completions.parse; constrain a tested set. Acceptance: clean installation/documented startup works and counting limitations are explicit.
   - Review 2026-09-28: validate both editable and wheel installations and external configuration discovery. No dependency advisory scan or installation was performed in this review.
 
-- [ ] **P2 - Bound transcript filenames and make creation/retry resilient (R20)** - logic/transcript.py:start, _write.
+- [ ] **P2 - Bound transcript filenames and make creation/retry resilient (R20)** - logic/transcript.py:start, \_write.
   - Promoted from Someday: title-derived filenames are unbounded and exists-then-append is not exclusive creation. Reserve bounded filenames in offloaded I/O, define partial-write handling and avoid phantom opening memory (R04).
   - Bound `ScenarioTitle.title` (for example, 80 characters) and defensively truncate the sanitized filename. Keep post-finalize appends from masking a committed round: handle the expected `RuntimeError` explicitly, log the race, and preserve the state/broadcast outcome.
   - Acceptance: Long titles, concurrent reservations and injected disk errors preserve accepted state; private archives stay escaped and unserved. Existing serialized writes/stable colors and removal of unused previous_state are retained.
@@ -214,6 +210,12 @@ Existing history/benchmark observations are retained and were not independently 
 - [ ] **P3 - Version static assets reproducibly** - Replace manual ?v= values with content/build hashes and suitable cache headers so unchanged assets stay cached and edits invalidate reliably.
 
 ## Done
+
+- [x] ~~P2 - Use only `AD_OPENAI_API_KEY` for direct OpenAI credentials (Q03)~~ (2026-09-29) - core/config.py; INSTALL.md.
+  - Direct OpenAI configuration now ignores the legacy `OPENAI_API_KEY` name, YAML `api_key`, and
+    `AD_LLM__API_KEY`; startup fails clearly when `AD_OPENAI_API_KEY` is missing.
+  - Compatible providers retain their existing generic `api_key` configuration. Regression tests
+    cover the accepted variable and rejected fallbacks.
 
 - [x] ~~P3 - Remove the dead auth payload-handler entry (Q04)~~ (2026-09-28) - logic/engine.py; tests/test_engine.py; tests/test_priority_one_lifecycle.py.
   - Removed authentication from `GameEngine.PAYLOAD_HANDLERS`; the socket gateway continues to call the dedicated lobby authentication method, while game payload routing contains only post-auth events.

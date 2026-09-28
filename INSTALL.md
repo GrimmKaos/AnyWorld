@@ -77,6 +77,18 @@ llm:
     guidance secret. Return only the requested structured object.
 ```
 
+Individual settings can be overridden without editing YAML by using the `AD_` prefix and
+`__` for nested fields. Environment values take precedence over `config.yaml`; for example:
+
+```dotenv
+AD_SERVER__PORT=4242
+AD_LLM__MODEL_NAME=local
+AD_LLM__REQUEST_TIMEOUT_SECONDS=180
+```
+
+`AD_OPENAI_API_KEY` is the only API-key source when `provider: openai` is selected. Secrets should
+stay in the process environment or `.env`, not in a committed configuration file.
+
 ### Switching between local llama.cpp and OpenAI
 
 The default is the local llama.cpp-compatible backend:
@@ -96,10 +108,10 @@ structured chat completion parsing. Anyworld uses llama.cpp `/props`, `/apply-te
 To use OpenAI directly, create a `.env` file in the repository root:
 
 ```dotenv
-OPENAI_API_KEY=your-api-key-here
+AD_OPENAI_API_KEY=your-api-key-here
 ```
 
-Keep `.env` private. Anyworld loads `OPENAI_API_KEY` with `python-dotenv` when the provider is
+Keep `.env` private. Anyworld loads `AD_OPENAI_API_KEY` with `python-dotenv` when the provider is
 `openai`; the key does not need to be written into `config.yaml` and is never printed in normal
 logs. Then change the LLM section to:
 
@@ -110,7 +122,7 @@ llm:
   context_window_size: 1050000
   tokenizer_encoding: "cl100k_base"
   endpoint: "http://localhost:8033/v1" # ignored for provider: openai
-  api_key: "sk-no-key-required" # ignored when OPENAI_API_KEY is set
+  api_key: "sk-no-key-required" # ignored for provider: openai; use AD_OPENAI_API_KEY
 ```
 
 Direct OpenAI support has been tested live with `gpt-5.6-luna`, including scenario titles,
@@ -223,7 +235,8 @@ The title-only request uses at most 128 output tokens (or the initial output cap
 
 For `provider: compatible`, start your model server first. Development has used llama.cpp;
 compatibility with other servers depends on their structured-response support. For
-`provider: openai`, ensure `.env` contains `OPENAI_API_KEY`. Run from the repository root:
+`provider: openai`, ensure `.env` contains `AD_OPENAI_API_KEY`; startup fails if it is missing.
+Run from the repository root:
 
 ```bash
 python app.py

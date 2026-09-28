@@ -55,23 +55,73 @@ llm:
     assert loaded.llm.context_window_size == 4096
 
 
+def test_ad_environment_overrides_yaml_values(tmp_path: Path, monkeypatch) -> None:
+    """Apply nested AD_ values without discarding other YAML settings."""
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+server:
+    port: 9000
+    host_password: "host"
+    player_password: "player"
+llm:
+    model_name: "yaml-model"
+    system_prompt: "Direct the game."
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AD_SERVER__PORT", "4567")
+    monkeypatch.setenv("AD_LLM__MODEL_NAME", "environment-model")
+
+    loaded = Settings.load(config)
+
+    assert loaded.server.port == 4567
+    assert loaded.llm.model_name == "environment-model"
+    assert loaded.llm.system_prompt == "Direct the game."
+
+
 def test_openai_api_key_comes_from_environment(tmp_path: Path, monkeypatch) -> None:
-    """Use OPENAI_API_KEY for the direct provider without requiring it in YAML."""
+    """Use AD_OPENAI_API_KEY for the direct provider without requiring it in YAML."""
     config = tmp_path / "config.yaml"
     config.write_text(
         """
 llm:
     provider: "openai"
     model_name: "gpt-5.6-luna"
+    api_key: "yaml-secret"
     system_prompt: "Direct the game."
 """,
         encoding="utf-8",
     )
-    monkeypatch.setenv("OPENAI_API_KEY", "test-secret")
+    monkeypatch.setenv("OPENAI_API_KEY", "stale-secret")
+    monkeypatch.setenv("AD_LLM__API_KEY", "nested-secret")
+    monkeypatch.setenv("AD_OPENAI_API_KEY", "test-secret")
 
     loaded = Settings.load(config)
 
     assert loaded.llm.api_key == "test-secret"
+
+
+def test_openai_api_key_does_not_fall_back_to_legacy_environment(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Require AD_OPENAI_API_KEY instead of accepting legacy or YAML keys."""
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+llm:
+    provider: "openai"
+    api_key: "yaml-secret"
+    system_prompt: "Direct the game."
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("AD_OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "stale-secret")
+    monkeypatch.setenv("AD_LLM__API_KEY", "nested-secret")
+
+    with pytest.raises(ConfigLoadError, match="AD_OPENAI_API_KEY"):
+        Settings.load(config)
 
 
 def test_openai_schema_omits_unsupported_strict_keywords() -> None:

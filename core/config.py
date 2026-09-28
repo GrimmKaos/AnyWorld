@@ -7,7 +7,7 @@ from typing import Any, Literal
 import yaml
 from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, EnvSettingsSource, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.yaml"
@@ -82,13 +82,7 @@ class ServerConfig(BaseModel):
 
 
 class Settings(BaseSettings):
-    """Root settings model and the explicit YAML loading path used by the app.
-
-    The model retains Pydantic Settings metadata for the configuration contract,
-    but ``load`` validates the YAML mapping directly rather than invoking the
-    BaseSettings environment-source pipeline.  The supported secret override is
-    the explicit ``OPENAI_API_KEY`` handling in ``load`` below.
-    """
+    """Root settings model and YAML loader with environment overrides."""
 
     model_config = SettingsConfigDict(
         strict=True,
@@ -102,11 +96,11 @@ class Settings(BaseSettings):
 
     @classmethod
     def load(cls, path: str | Path = DEFAULT_CONFIG_PATH) -> "Settings":
-        """Load and validate YAML settings, keeping the OpenAI key in memory only.
+        """Load YAML, apply ``AD_`` overrides, and validate the merged settings.
 
-        When the direct OpenAI provider is selected, ``OPENAI_API_KEY`` replaces the
-        YAML key in the in-memory mapping before validation; it is never written back
-        to the configuration file or included in diagnostics.
+        When the direct OpenAI provider is selected, ``AD_OPENAI_API_KEY`` is the only
+        accepted API-key source. It is never written back to the configuration file or
+        included in diagnostics.
         """
         config_path = Path(path)
         try:
@@ -124,12 +118,28 @@ class Settings(BaseSettings):
         if not isinstance(raw_data, dict):
             raise ConfigLoadError(f"Configuration root must be a mapping: {config_path}")
 
-        llm_data = raw_data.get("llm")
-        openai_api_key = os.environ.get("OPENAI_API_KEY")
-        if isinstance(llm_data, dict) and llm_data.get("provider") == "openai" and openai_api_key:
+        environment_data = EnvSettingsSource(cls)()
+        merged_data = cls._merge_mappings(raw_data, environment_data)
+        llm_data = merged_data.get("llm")
+        openai_api_key = os.environ.get("AD_OPENAI_API_KEY")
+        if isinstance(llm_data, dict) and llm_data.get("provider") == "openai":
+            if not openai_api_key:
+                raise ConfigLoadError("AD_OPENAI_API_KEY must be set when provider is 'openai'")
             # Keep the secret in memory only; never include it in config diagnostics/logs.
             llm_data["api_key"] = openai_api_key
-        return cls.model_validate(raw_data)
+        return cls.model_validate(merged_data)
+
+    @staticmethod
+    def _merge_mappings(values: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
+        """Recursively apply environment values over the YAML mapping."""
+        merged = dict(values)
+        for key, value in overrides.items():
+            current = merged.get(key)
+            if isinstance(current, dict) and isinstance(value, dict):
+                merged[key] = Settings._merge_mappings(current, value)
+            else:
+                merged[key] = value
+        return merged
 
 
 settings = Settings.load()
