@@ -5,7 +5,13 @@ import secrets
 from enum import Enum, auto
 from typing import Any, Protocol
 
-from core.schemas import ChanceEventResult, DicePlan, RoundResolution, ServerEvent
+from core.schemas import (
+    ChanceEventResult,
+    DicePlan,
+    RoundResolution,
+    ServerEvent,
+    StructuredChanceRule,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,6 +161,8 @@ class ResolutionManager(Protocol):
     ) -> PreparedResolution: ...
 
     def commit_resolution(self, prepared: PreparedResolution) -> None: ...
+
+    def configure_chance_rule(self, rule: StructuredChanceRule | None) -> None: ...
 
     async def close(self) -> None:
         """Release backend resources."""

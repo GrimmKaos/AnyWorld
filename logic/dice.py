@@ -9,6 +9,7 @@ from core.schemas import (
     ChanceEventResult,
     ChanceRuleDecision,
     ChanceRuleInterpretation,
+    StructuredChanceRule,
 )
 
 
@@ -134,6 +135,14 @@ def normalize_chance_rule_decision(
             raise ValueError("A chance decision was supplied without a private chance rule.")
         return None
     instruction, _ = rule
+    if interpretation is not None and interpretation.structured:
+        if decision is None:
+            raise ValueError("Structured chance eligibility requires a decision.")
+        return _normalize_structured_occurrences(
+            decision.model_copy(update={"trigger": interpretation.cadence}),
+            interpretation,
+            expected_names,
+        )
     if _is_per_round_rule(instruction) or not _has_conditional_trigger(instruction):
         return ChanceRuleDecision(
             trigger="per_round",
@@ -156,6 +165,8 @@ def normalize_chance_rule_decision(
 def validate_chance_events(
     events: list[ChanceEvent],
     guidance: str,
+    *,
+    preserve_occurrences: bool = False,
 ) -> list[ChanceEvent]:
     """Resolve event metadata to the one trusted private rule."""
     rule = private_chance_rule(guidance)
@@ -171,7 +182,11 @@ def validate_chance_events(
             raise ValueError(
                 "Chance event must keep the dedicated private rule's percentage unchanged."
             )
-        occurrence = "round" if event.trigger == "per_round" else event.occurrence.strip()
+        occurrence = (
+            "round"
+            if event.trigger == "per_round" and not preserve_occurrences
+            else event.occurrence.strip()
+        )
         if not occurrence:
             raise ValueError("Conditional chance events must describe the triggering occurrence.")
         key = (instruction.casefold(), occurrence.casefold())
@@ -182,6 +197,23 @@ def validate_chance_events(
             event.model_copy(update={"source_rule": instruction, "occurrence": occurrence})
         )
     return normalized
+
+
+def structured_rule_text(rule: StructuredChanceRule) -> str:
+    """Stable private serialization; cadence and eligibility remain independent."""
+    cadence = "per round" if rule.cadence == "per_round" else f"when {rule.trigger}"
+    eligibility = f"; eligibility: {rule.eligibility}" if rule.eligibility else ""
+    return (
+        f"{rule.chance_percent}% {cadence}; scope: {rule.scope}{eligibility}; effect: {rule.effect}"
+    )
+
+
+def validate_legacy_rule(text: str) -> None:
+    """Require host correction for mixed or missing legacy cadence."""
+    if text and (_is_per_round_rule(text) == _has_conditional_trigger(text)):
+        raise ValueError(
+            "Legacy chance text has ambiguous cadence. Use the structured rule controls."
+        )
 
 
 def chance_events_from_decision(
@@ -201,7 +233,9 @@ def chance_events_from_decision(
         return []
     instruction, percentage = rule
     occurrences = normalized.occurrences
-    if normalized.trigger == "per_round":
+    if normalized.trigger == "per_round" and (
+        interpretation is None or interpretation.cadence != "per_round"
+    ):
         occurrences = ["round"]
     else:
         normalized_occurrences = [" ".join(occurrence.split()) for occurrence in occurrences]
@@ -230,7 +264,11 @@ def chance_events_from_decision(
                 occurrence=occurrence,
             )
         )
-    return validate_chance_events(events, guidance)
+    return validate_chance_events(
+        events,
+        guidance,
+        preserve_occurrences=interpretation is not None and interpretation.cadence == "per_round",
+    )
 
 
 def roll_chance(event: ChanceEvent) -> ChanceEventResult:

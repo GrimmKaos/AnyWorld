@@ -8,8 +8,8 @@ from contextvars import ContextVar
 from typing import TYPE_CHECKING
 
 from core.config import settings
-from core.schemas import ClientPayload, ServerEvent
-from logic.dice import combine_private_guidance
+from core.schemas import ClientPayload, ServerEvent, StructuredChanceRule
+from logic.dice import combine_private_guidance, structured_rule_text, validate_legacy_rule
 from logic.models import GameState, Player
 from logic.validation import clean_optional_text, clean_text
 
@@ -175,6 +175,17 @@ class LobbyMixin:
         scenario = clean_text(data.get("scenario"), "scenario", 20_000)
         guidance = clean_optional_text(data.get("guidance"), "guidance", 5_000)
         chance_event = clean_optional_text(data.get("chance_event"), "chance_event", 1_000)
+        rule = (
+            StructuredChanceRule.model_validate(data["chance_rule"])
+            if data.get("chance_rule")
+            else None
+        )
+        if rule is not None:
+            if chance_event:
+                raise ValueError("Use either structured chance controls or legacy text, not both.")
+            chance_event = structured_rule_text(rule)
+        else:
+            validate_legacy_rule(chance_event)
         guidance = combine_private_guidance(guidance, chance_event)
         async with self.lock:
             if not CURRENT_OWNER.get()():
@@ -185,15 +196,21 @@ class LobbyMixin:
             if self.state is not GameState.SCENARIO_INJECTION:
                 raise ValueError("The scenario cannot be changed in the current state.")
             self._launch_job_locked(
-                lambda epoch: self._prepare_scenario(epoch, client_id, scenario, guidance),
+                lambda epoch: self._prepare_scenario(epoch, client_id, scenario, guidance, rule),
                 GameState.SCENARIO_INJECTION,
             )
 
     async def _prepare_scenario(
-        self: "GameEngine", epoch: int, client_id: str, scenario: str, guidance: str
+        self: "GameEngine",
+        epoch: int,
+        client_id: str,
+        scenario: str,
+        guidance: str,
+        rule: StructuredChanceRule | None = None,
     ) -> None:
         """Generate only the title and open the lobby for players."""
         self.resolver.set_genesis(scenario, guidance)
+        self.resolver.configure_chance_rule(rule)
         await self.resolver.prepare_chance_rule()
         title = await self.resolver.generate_scenario_title()
         async with self.effects_lock:
@@ -202,6 +219,7 @@ class LobbyMixin:
                     return
                 self.original_scenario = scenario
                 self.private_guidance = guidance
+                self.chance_rule = rule
                 self.scenario_title = title
                 self.state = GameState.AWAITING_PLAYERS
             await self.sender.send_personal(

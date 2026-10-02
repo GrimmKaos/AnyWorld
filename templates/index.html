@@ -66,14 +66,30 @@
         <form id="scenario-form">
           <label for="scenario-input">Describe the setting, characters, and opening situation</label>
           <textarea id="scenario-input" maxlength="20000" required></textarea>
-          <label for="chance-event-input">One percentage-based event (optional)</label>
+          <fieldset><legend>One private chance rule (optional)</legend>
+            <label for="chance-percent">Chance, whole percent (leave blank to disable)</label>
+            <input id="chance-percent" type="number" min="0" max="100" step="1">
+            <label for="chance-cadence">Cadence</label>
+            <select id="chance-cadence"><option value="per_round">Once each round</option>
+              <option value="condition">On a triggering occurrence</option></select>
+            <label for="chance-trigger">Occurrence trigger (conditional cadence only)</label>
+            <input id="chance-trigger" maxlength="240" placeholder="A player enters a building">
+            <label for="chance-eligibility">Eligibility (optional; does not change cadence)</label>
+            <input id="chance-eligibility" maxlength="500" placeholder="The building is unstable">
+            <label for="chance-effect">Effect</label><input id="chance-effect" maxlength="500">
+            <label for="chance-scope">Roll scope</label>
+            <select id="chance-scope"><option value="shared">One shared roll</option>
+              <option value="per_player">One roll per eligible player</option></select>
+          </fieldset>
+          <details><summary>Legacy chance text</summary>
+          <label for="chance-event-input">Explicit legacy rule (use instead of controls)</label>
           <input id="chance-event-input" type="text" maxlength="1000" aria-describedby="chance-event-tips"
             placeholder="Example: Add a 40% chance per round that a helpful stranger appears">
           <div id="chance-event-tips">
             Use one whole-number percentage from 0–100% and specify a trigger, such as
             "when a player enters a building", or write "per round".
-            If no trigger is specified, the event is checked once per round, not once per player.
-          </div>
+            Ambiguous or mixed cadence requires correction.
+          </div></details>
           <label for="guidance-input">Additional freeform DM guidance (optional)</label>
           <textarea id="guidance-input" maxlength="5000" aria-describedby="guidance-tips"
             placeholder="Example: 'Keep the world coherent while steering toward eerie discoveries.'"></textarea>
@@ -100,6 +116,7 @@
         <button id="start-button" type="button">Start game</button>
       </section>
       <p id="host-status" role="status"></p>
+      <pre id="chance-preview" aria-label="Private chance rule preview"></pre>
     </div>
   </div>
 

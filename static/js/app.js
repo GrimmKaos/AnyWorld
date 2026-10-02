@@ -210,10 +210,13 @@ elements.loginForm.addEventListener("submit", async (event) => {
 
 elements.scenarioForm.addEventListener("submit", (event) => {
     event.preventDefault();
+    let rule;
+    try { rule = structuredChanceRule(); } catch (error) { showScenarioError(error.message); return; }
     if (
         send("scenario_init", {
             scenario: elements.scenario.value.trim(),
             chance_event: elements.chanceEvent.value.trim(),
+            chance_rule: rule,
             guidance: elements.guidance.value.trim(),
         })
     ) {
@@ -222,6 +225,30 @@ elements.scenarioForm.addEventListener("submit", (event) => {
         elements.hostStatus.classList.remove("error");
         elements.hostStatus.textContent = "Generating the scenario...";
     }
+});
+
+function structuredChanceRule() {
+    if (!elements.chancePercent.value.trim()) return null;
+    const percentage = Number(elements.chancePercent.value);
+    if (!Number.isInteger(percentage) || percentage < 0 || percentage > 100) {
+        throw new Error("Chance must be a whole percentage from 0 to 100.");
+    }
+    const rule = { chance_percent: percentage, cadence: elements.chanceCadence.value,
+        trigger: elements.chanceTrigger.value.trim(), eligibility: elements.chanceEligibility.value.trim(),
+        effect: elements.chanceEffect.value.trim(), scope: elements.chanceScope.value };
+    if (!rule.effect || (rule.cadence === "condition" && !rule.trigger) ||
+        (rule.cadence === "per_round" && rule.trigger)) {
+        throw new Error("Specify an effect and an occurrence trigger only for conditional cadence.");
+    }
+    if (elements.chanceEvent.value.trim()) throw new Error("Use controls or legacy text, not both.");
+    return rule;
+}
+elements.scenarioForm.addEventListener("input", () => {
+    try {
+        const rule = structuredChanceRule();
+        elements.chancePreview.textContent = rule ? "Private rule preview:\n" + JSON.stringify(rule, null, 2)
+            : elements.chanceEvent.value.trim();
+    } catch (error) { elements.chancePreview.textContent = error.message; }
 });
 
 elements.endGameButton.addEventListener("click", () => {

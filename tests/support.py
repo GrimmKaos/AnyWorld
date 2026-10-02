@@ -42,6 +42,9 @@ class FakeSender:
 class FakeResolver:
     """Deterministic resolution backend for tests."""
 
+    def configure_chance_rule(self, rule) -> None:
+        self.chance_rule = rule
+
     def __init__(self) -> None:
         """Initialize the fake resolver state."""
         self.scenario = ""

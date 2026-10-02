@@ -71,6 +71,7 @@ class GameEngine(LobbyMixin):
         self.scenario_title: str | None = None
         self.original_scenario: str | None = None
         self.private_guidance = ""
+        self.chance_rule = None
         self.current_scenario_state: str | None = None
         self.opening_scenario: str | None = None
         self.transcript = GameTranscript()
@@ -513,7 +514,11 @@ class GameEngine(LobbyMixin):
             }:
                 raise LLMResolutionError("Invalid dice plan participants.")
             try:
-                chance_events = validate_chance_events(plan.chance_events, self.private_guidance)
+                chance_events = validate_chance_events(
+                    plan.chance_events,
+                    self.private_guidance,
+                    preserve_occurrences=self.chance_rule is not None,
+                )
             except ValueError as exc:
                 raise LLMResolutionError(str(exc)) from exc
             pending.hidden = set(plan.hidden_rolls)

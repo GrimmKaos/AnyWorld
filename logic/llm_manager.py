@@ -236,6 +236,20 @@ class LLMContextManager:
             self.chance_rule_interpretation = interpretation
         self._chance_rule_prepared = True
 
+    def configure_chance_rule(self, rule) -> None:
+        self.structured_chance_rule = rule
+        if rule is not None:
+            self.chance_rule_interpretation = ChanceRuleInterpretation(
+                trigger_type="world_transition",
+                trigger_description=rule.trigger or "Once this round",
+                occurrence_scope=rule.scope,
+                effect=rule.effect,
+                eligibility=rule.eligibility,
+                cadence=rule.cadence,
+                structured=True,
+            )
+            self._chance_rule_prepared = True
+
     async def _plan_chance_triggers(
         self, round_buffer: dict[str, str], current_state: str
     ) -> ChanceRuleDecision | None:
@@ -243,6 +257,16 @@ class LLMContextManager:
         interpretation = self.chance_rule_interpretation
         if interpretation is None:
             return None
+        if interpretation.cadence == "per_round" and not interpretation.eligibility:
+            return ChanceRuleDecision(
+                trigger="per_round",
+                reason="Once for each eligible scope this round.",
+                occurrences=(
+                    list(round_buffer)
+                    if interpretation.occurrence_scope == "per_player"
+                    else ["shared"]
+                ),
+            )
         prompt, schema = self._build_round_request(
             RequestKind.CHANCE_TRIGGER, round_buffer, current_state
         )

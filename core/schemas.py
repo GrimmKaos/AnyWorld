@@ -2,7 +2,7 @@
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 
 class StrictModel(BaseModel):
@@ -83,6 +83,33 @@ class ChanceRuleInterpretation(StrictModel):
     trigger_description: str = Field(min_length=1, max_length=240)
     occurrence_scope: Literal["per_player", "shared"]
     effect: str = Field(min_length=1, max_length=500)
+    eligibility: str = Field(default="", max_length=500)
+    cadence: Literal["per_round", "condition"] = "condition"
+    structured: bool = False
+
+
+class StructuredChanceRule(StrictModel):
+    chance_percent: int = Field(ge=0, le=100)
+    cadence: Literal["per_round", "condition"]
+    trigger: str = Field(default="", max_length=240)
+    eligibility: str = Field(default="", max_length=500)
+    effect: str = Field(min_length=1, max_length=500)
+    scope: Literal["shared", "per_player"]
+
+    @model_validator(mode="after")
+    def explicit_semantics(self):
+        import re
+
+        if self.cadence == "condition" and not self.trigger.strip():
+            raise ValueError("Conditional cadence requires an explicit occurrence trigger.")
+        if self.cadence == "per_round" and self.trigger.strip():
+            raise ValueError("A per-round rule cannot also specify an occurrence trigger.")
+        for value in (self.trigger, self.eligibility, self.effect):
+            if re.search(r"%|\bpercent\b|[\x00-\x1f\x7f-\x9f]", value, re.IGNORECASE):
+                raise ValueError("Rule text must be a single line without extra percentages.")
+        if not self.effect.strip():
+            raise ValueError("A chance rule requires an effect.")
+        return self
 
 
 class ChanceTriggerPlan(StrictModel):
@@ -157,6 +184,7 @@ class ScenarioInput(StrictModel):
     scenario: str = Field(min_length=1, max_length=20000)
     guidance: str = Field(default="", max_length=5000)
     chance_event: str = Field(default="", max_length=1000)
+    chance_rule: StructuredChanceRule | None = None
 
 
 class JournalInput(StrictModel):
