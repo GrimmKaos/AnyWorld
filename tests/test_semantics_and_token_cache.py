@@ -233,6 +233,7 @@ def test_failed_tokenization_is_retried_for_another_schema():
         assert manager.token_count_method == "conservative UTF-8 estimate"
         assert not manager.budget._request_counts
         available = True
+        manager.budget._backend_retry_at = 0
         await manager.budget.input_tokens(messages, DicePlan)
         assert manager.token_count_method == "backend template/tokenizer + schema allowance"
         assert await manager.budget.input_tokens(messages, None) == 2
@@ -264,7 +265,7 @@ def test_rejected_summary_audit_preserves_original_context():
             )
         assert manager.history is original
         assert manager.memory is None
-        assert manager.game_usage.attempts == 2
+        assert manager.game_usage.attempts == 4
 
     asyncio.run(run())
 

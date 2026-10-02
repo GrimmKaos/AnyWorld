@@ -149,6 +149,9 @@ def test_context_discovery_recovers_after_backend_outage():
         await manager.discover_context_window()
         assert not manager.budget._context_discovered
         await manager.discover_context_window()
+        assert len(requests) == 1
+        manager.budget._discovery_retry_at = 0
+        await manager.discover_context_window()
         assert manager.context_window_size == 128000
         await manager.discover_context_window()
         assert len(requests) == 2

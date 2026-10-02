@@ -4,6 +4,9 @@ import asyncio
 import json
 from collections import OrderedDict
 from hashlib import sha256
+from contextlib import contextmanager
+from contextvars import ContextVar
+from time import monotonic
 from typing import Any
 
 import httpx
@@ -15,6 +18,7 @@ from .response_schemas import schema_text
 
 # Both providers count hidden reasoning within the completion cap.
 _THINKING_OUTPUT_BUDGETS = {"none": 0, "low": 2_048, "medium": 4_096, "high": 8_192}
+_LOCAL_ONLY = ContextVar("local_token_estimates", default=False)
 _NO_THINKING_KINDS = frozenset(
     {
         "title",
@@ -48,6 +52,18 @@ class TokenBudget:
         self._text_counts: OrderedDict = OrderedDict()
         self._request_counts: OrderedDict = OrderedDict()
         self._template_identity = "undiscovered"
+        self._inflight: dict[tuple, asyncio.Task] = {}
+        self._backend_retry_at = 0.0
+        self._discovery_retry_at = 0.0
+        self._cache_bytes = 0
+
+    @contextmanager
+    def local_estimates(self):
+        token = _LOCAL_ONLY.set(True)
+        try:
+            yield
+        finally:
+            _LOCAL_ONLY.reset(token)
 
     def output_limit(self, kind: str) -> int:
         """Return the configured output token cap for a request kind."""
@@ -110,6 +126,10 @@ class TokenBudget:
         self, messages: list[dict[str, str]], schema: type[BaseModel] | None, kind: str = "round"
     ) -> int:
         """Reuse formatted message counts across schemas with the same tokenizer identity."""
+        if _LOCAL_ONLY.get():
+            self.token_count_method = "conservative UTF-8 estimate"
+            count = self.context_size(messages)
+            return count + (self.count_tokens(schema_text(schema)) + 64 if schema else 0)
         template_options = self.template_options(kind)
         template_identity = tuple(
             (
@@ -132,19 +152,40 @@ class TokenBudget:
             count, method = self._request_counts[key]
             self._request_counts.move_to_end(key)
         else:
-            count = await self._uncached_message_tokens(messages, kind)
-            method = self.token_count_method
+            task = self._inflight.get(key)
+            if task is None:
+                task = asyncio.create_task(self._measure(messages, kind))
+                self._inflight[key] = task
+            try:
+                count, method = await asyncio.shield(task)
+            finally:
+                if task.done():
+                    self._inflight.pop(key, None)
             # Retry unavailable tokenization rather than pinning a backend failure.
-            if method != "conservative UTF-8 estimate":
+            if method != "conservative UTF-8 estimate" and key not in self._request_counts:
                 self._request_counts[key] = (count, method)
-                if len(self._request_counts) > 128:
-                    self._request_counts.popitem(last=False)
+                self._cache_bytes += sum(
+                    len(content.encode("utf-8")) for _, content in message_identity
+                )
+                while len(self._request_counts) > 128 or self._cache_bytes > 4 * 1024 * 1024:
+                    evicted, _ = self._request_counts.popitem(last=False)
+                    self._cache_bytes -= sum(
+                        len(content.encode("utf-8")) for _, content in evicted[-1]
+                    )
         self.token_count_method = method
         if schema is not None:
             count += self.count_tokens(schema_text(schema)) + 64
             if method == "backend template/tokenizer":
                 self.token_count_method += " + schema allowance"
         return count
+
+    async def _measure(self, messages, kind):
+        try:
+            async with asyncio.timeout(5):
+                count = await self._uncached_message_tokens(messages, kind)
+                return count, self.token_count_method
+        except TimeoutError:
+            return self.context_size(messages), "conservative UTF-8 estimate"
 
     async def _uncached_message_tokens(
         self, messages: list[dict[str, str]], kind: str = "round"
@@ -160,7 +201,10 @@ class TokenBudget:
             except (KeyError, ValueError, OSError):
                 # Unknown/mismatched encodings retain the conservative byte estimate.
                 self.encoding = None
-        if settings.llm.provider == "compatible":
+        if settings.llm.provider == "compatible" and not _LOCAL_ONLY.get():
+            if monotonic() < self._backend_retry_at:
+                self.token_count_method = "conservative UTF-8 estimate"
+                return self.context_size(messages)
             try:
                 http = await self._http_client()
                 rendered = await http.post(
@@ -183,11 +227,17 @@ class TokenBudget:
                 return len(token_ids)
             except (httpx.HTTPError, ValueError, KeyError, TypeError):
                 self.token_count_method = "conservative UTF-8 estimate"
+                self._backend_retry_at = monotonic() + 1.0
         return self.context_size(messages)
 
     async def discover_context_window(self) -> None:
         """Discover the backend context window size when available."""
-        if self._context_discovered or settings.llm.provider != "compatible":
+        if (
+            self._context_discovered
+            or settings.llm.provider != "compatible"
+            or _LOCAL_ONLY.get()
+            or monotonic() < self._discovery_retry_at
+        ):
             return
         try:
             http = await self._http_client()
@@ -214,7 +264,7 @@ class TokenBudget:
                 self.context_window_source = "llama.cpp /props per-slot n_ctx"
                 self._context_discovered = True
         except (httpx.HTTPError, ValueError, TypeError, AttributeError):
-            pass
+            self._discovery_retry_at = monotonic() + 1.0
 
     def count_tokens(self, content: str) -> int:
         """Count tokens in a string using the encoding or a byte estimate."""
@@ -241,9 +291,16 @@ class TokenBudget:
         """Discard retained counts when starting a new game."""
         self._text_counts.clear()
         self._request_counts.clear()
+        self._cache_bytes = 0
 
     async def close(self) -> None:
         """Close the lazily-created discovery/tokenizer HTTP client."""
+        tasks = list(self._inflight.values())
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._inflight.clear()
         if self._http is not None:
             await self._http.aclose()
             self._http = None

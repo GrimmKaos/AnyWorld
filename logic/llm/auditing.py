@@ -14,7 +14,7 @@ from core.schemas import (
     SummaryAudit,
 )
 from . import prompts
-from .errors import LLMResolutionError
+from .errors import LLMResolutionError, SummaryRejectedError
 
 logger = logging.getLogger(__name__)
 
@@ -81,4 +81,4 @@ async def audit_summary(
         prompts.summary_audit_prompt(messages, summary), SummaryAudit, "summary_audit"
     )
     if not audit.preserved or audit.corrections:
-        raise LLMResolutionError("Summary changed durable facts; original memory retained.")
+        raise SummaryRejectedError(audit.corrections)

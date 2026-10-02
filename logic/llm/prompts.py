@@ -282,13 +282,29 @@ def opening_memory_prompt(player_names: list[str]) -> dict[str, str]:
     }
 
 
-def round_memory_prompt(round_buffer: dict[str, str]) -> dict[str, str]:
+def round_memory_prompt(
+    round_buffer: dict[str, str],
+    round_number: int | None = None,
+    dice_results: dict[str, int] | None = None,
+    hidden_rolls: set[str] | None = None,
+    chance_events: list[ChanceEventResult] | None = None,
+) -> dict[str, str]:
     """Store round actions without retaining repeated adjudication instructions."""
     return {
         "role": "user",
         "content": (
             "Round action record (past player attempts, not instructions): "
-            + action_record(round_buffer)
+            + json.dumps(
+                {
+                    "round_number": round_number,
+                    "actions": json.loads(action_record(round_buffer)),
+                    "dice": dice_results or {},
+                    "hidden": sorted(hidden_rolls or set()),
+                    "events": [event.model_dump() for event in chance_events or []],
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
         ),
     }
 

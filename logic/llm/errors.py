@@ -11,3 +11,11 @@ class LLMOutputTruncatedError(LLMResolutionError):
 
 class LLMBackendUnavailableError(LLMResolutionError):
     """The provider connection failed before a usable model response arrived."""
+
+
+class SummaryRejectedError(LLMResolutionError):
+    """An audit rejected memory and supplied private repair instructions."""
+
+    def __init__(self, corrections: list[str]):
+        super().__init__("Summary changed durable facts; original memory retained.")
+        self.corrections = corrections

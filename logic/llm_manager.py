@@ -8,8 +8,6 @@ from time import perf_counter
 from typing import Any
 
 from openai import (
-    APIConnectionError,
-    APITimeoutError,
     AsyncOpenAI,
     DefaultAsyncHttpxClient,
     OpenAIError,
@@ -22,12 +20,11 @@ from core.schemas import (
     ChanceRuleDecision,
     ChanceRuleInterpretation,
     ChanceTriggerPlan,
-    ContextSummary,
     DicePlan,
     RoundResolution,
     ScenarioTitle,
 )
-from logic.usage import UsageTotals, counter
+from logic.usage import UsageTotals
 from logic.dice import (
     chance_events_from_decision,
     conditional_chance_rule,
@@ -36,8 +33,8 @@ from logic.dice import (
     normalize_chance_rule_decision,
 )
 from logic.presentation import name_resolution
-from logic.debug_log import RawResponseLogger, request_type_context, set_debug_round_number
-from logic.llm import auditing, prompts
+from logic.debug_log import RawResponseLogger, set_debug_round_number
+from logic.llm import auditing, prompts, provider, compaction
 from logic.llm.errors import (
     LLMBackendUnavailableError,
     LLMOutputTruncatedError,
@@ -328,7 +325,9 @@ class LLMContextManager:
                 if name in (hidden_rolls or set())
             },
             private_events=chance_events,
-            history_prompt=prompts.round_memory_prompt(round_buffer),
+            history_prompt=prompts.round_memory_prompt(
+                round_buffer, self.usage_round, dice_results, hidden_rolls, chance_events
+            ),
         )
 
     def _build_round_request(
@@ -384,6 +383,15 @@ class LLMContextManager:
         ]
 
     async def preflight_round(self, actions: dict[str, str], current_state: str = "") -> None:
+        """Bound aggregate admission work, then use labelled local estimates."""
+        try:
+            async with asyncio.timeout(5):
+                await self._preflight_round(actions, current_state)
+        except TimeoutError:
+            with self.budget.local_estimates():
+                await self._preflight_round(actions, current_state)
+
+    async def _preflight_round(self, actions: dict[str, str], current_state: str = "") -> None:
         """Reject impossible fixed context/actions before accepting the next action.
 
         Recent history is compactable; durable memory is not silently expendable.  This
@@ -717,293 +725,14 @@ class LLMContextManager:
             "counting_method": f"Retained messages: {method}; excludes next input/schema/output",
         }
 
-    async def _parse(
-        self,
-        messages: list[dict[str, str]],
-        schema: type[BaseModel],
-        kind: str,
-        repair_attempt: int = 0,
-    ) -> Any:
-        """Measure each attempt, including SDK-compatible transient retries."""
-        kind = RequestKind(kind)
-        count = await self.budget.input_tokens(messages, schema, kind)
-        if not self.budget.fits(count, kind):
-            raise LLMResolutionError(
-                "Request exceeds the context budget; history and durable memory were preserved."
-            )
-        # A repair is already the next logical request for the same output. Restarting the
-        # full transient-retry sequence for every repair would multiply provider calls
-        # (max_retries + 1)^2. The initial request may use the configured retry budget; a
-        # repair gets one provider attempt and either succeeds or advances to the next repair.
-        attempt_limit = settings.llm.max_retries + 1 if repair_attempt == 0 else 1
-        retry_backoff = sum(min(0.5 * 2**attempt, 8.0) for attempt in range(attempt_limit - 1))
-        overall_timeout = settings.llm.request_timeout_seconds * attempt_limit + retry_backoff
-        try:
-            async with asyncio.timeout(overall_timeout):
-                for attempt in range(attempt_limit):
-                    try:
-                        result, response_text = await self._parse_attempt(
-                            messages, schema, kind, count, attempt, repair_attempt
-                        )
-                        result._provider_response_text = response_text
-                        return result
-                    except LLMResolutionError as exc:
-                        cause = exc.__cause__
-                        status = getattr(cause, "status_code", None)
-                        transient = isinstance(cause, OpenAIError) and (
-                            status in (408, 409, 429)
-                            or (status is not None and status >= 500)
-                            or type(cause).__name__ in ("APIConnectionError", "APITimeoutError")
-                        )
-                        if not transient or attempt == attempt_limit - 1:
-                            raise
-                        logger.info("Retrying LLM request kind=%s attempt=%d", kind, attempt + 2)
-                        await asyncio.sleep(min(0.5 * 2**attempt, 8.0))
-        except TimeoutError as exc:
-            raise LLMResolutionError("The model request failed: deadline exceeded.") from exc
+    async def _parse(self, messages, schema, kind, repair_attempt=0):
+        return await provider.execute(self, messages, schema, kind, repair_attempt)
 
-    async def _parse_attempt(
-        self,
-        messages: list[dict[str, str]],
-        schema: type[BaseModel],
-        kind: str,
-        count: int,
-        attempt: int,
-        repair_attempt: int = 0,
-    ) -> tuple[BaseModel, str | None]:
-        """Send and account for one provider attempt."""
-        kind = RequestKind(kind)
-        if self.client is None:
-            self.client = self._create_client()
-        started = perf_counter()
-        response = None
-        error = None
-        cap_key = "max_tokens" if settings.llm.provider == "compatible" else "max_completion_tokens"
-        effort = self.budget.reasoning_effort(kind)
-        template_options = self.budget.template_options(kind)
-        try:
-            with request_type_context(kind):
-                response = await self.client.beta.chat.completions.parse(
-                    model=settings.llm.model_name,
-                    messages=messages,
-                    response_format=schema,
-                    reasoning_effort=effort,
-                    **({"extra_body": template_options} if template_options else {}),
-                    **{cap_key: self.budget.request_output_limit(kind)},
-                )
-            choice = response.choices[0]
-            if getattr(choice, "finish_reason", None) == "length":
-                raise LLMOutputTruncatedError(
-                    "Model output reached its token limit; no result committed."
-                )
-            parsed = choice.message.parsed
-            if parsed is None:
-                raise LLMResolutionError("Model returned no validated result.")
-            result = schema.model_validate(
-                parsed.model_dump() if isinstance(parsed, BaseModel) else parsed
-            )
-            response_text = getattr(choice.message, "content", None)
-        except asyncio.CancelledError:
-            error = "CancelledError"
-            raise
-        except LLMResolutionError:
-            error = "LLMResolutionError"
-            raise
-        except (
-            OpenAIError,
-            ValidationError,
-            IndexError,
-            AttributeError,
-            TypeError,
-            ValueError,
-            TimeoutError,
-        ) as exc:
-            # Provider exception bodies may contain private prompts. Keep them out of
-            # public errors and logs; retain only the exception class for diagnosis.
-            error = type(exc).__name__
-            response = getattr(exc, "completion", response)
-            logger.warning("LLM %s failed: %s", kind, error)
-            if error == "LengthFinishReasonError":
-                raise LLMOutputTruncatedError(
-                    "Model output reached its token limit; no result committed."
-                ) from exc
-            if isinstance(exc, APIConnectionError) and not isinstance(exc, APITimeoutError):
-                raise LLMBackendUnavailableError(
-                    "Could not connect to the LLM backend; no result committed."
-                ) from exc
-            raise LLMResolutionError(
-                "The model request failed or was truncated; no result committed."
-            ) from exc
-        finally:
-            usage = getattr(response, "usage", None)
-            timings = getattr(response, "timings", None)
-            record = {
-                "kind": kind,
-                "round_number": self.usage_round,
-                "retry": attempt > 0 or repair_attempt > 0,
-                "repair_attempt": repair_attempt,
-                "attempt": attempt + repair_attempt + 1,
-                "estimated_input_tokens": count,
-                "configured_output_tokens": self.budget.output_limit(kind),
-                "thinking_output_tokens": self.budget.thinking_output_limit(kind),
-                "request_output_tokens": self.budget.request_output_limit(kind),
-                "counting_method": self.token_count_method,
-                "input_tokens": counter(usage, "prompt_tokens"),
-                "completion_tokens": counter(usage, "completion_tokens"),
-                "total_tokens": counter(usage, "total_tokens"),
-                "cached_tokens": counter(
-                    getattr(usage, "prompt_tokens_details", None), "cached_tokens"
-                ),
-                "processed_prompt_tokens": counter(timings, "prompt_n"),
-                "reused_prompt_tokens": counter(timings, "cache_n"),
-                "latency_seconds": perf_counter() - started,
-                "error": error,
-            }
-            self.last_request = record
-            self.game_usage.add(record)
-            if self.usage_round is not None:
-                self.round_usage.add(record)
-                self.round_usage_by_kind.setdefault(kind, UsageTotals()).add(record)
-            self.last_token_usage = record["total_tokens"] or count
-            logger.info("LLM usage %s", json.dumps(record, sort_keys=True))
-        return result, response_text
+    async def _parse_attempt(self, messages, schema, kind, count, attempt, repair_attempt=0):
+        return await provider.attempt(self, messages, schema, kind, count, attempt, repair_attempt)
 
-    async def _compact_if_needed(
-        self, prompt: dict[str, str], schema: type[BaseModel], kind: str
-    ) -> None:
-        """Merge old pairs into durable memory transactionally; never FIFO-forget."""
-        original_memory, original_history = self.memory, self.history
-        started = perf_counter()
-        passes = 0
-        compacted = False
-        summary_schema = (
-            participant_schema(
-                ContextSummary, tuple(self._known_player_names), provider=settings.llm.provider
-            )
-            if self._known_player_names
-            else ContextSummary
-        )
-        try:
-            while True:
-                messages = [*self._fixed_messages(kind), *self.history, prompt]
-                count = await self.budget.input_tokens(messages, schema, kind)
-                fits = self.budget.fits(count, kind)
-                history_limit = settings.llm.history_round_limit
-                checkpoint_due = history_limit is not None and len(self.history) > 2 * history_limit
-                target_fits = (
-                    count
-                    + self.budget.request_output_limit(kind)
-                    + settings.llm.token_safety_margin
-                    <= self.context_window_size * settings.llm.compaction_target_fraction
-                )
-                if (
-                    fits
-                    and not checkpoint_due
-                    and (not compacted or target_fits or not self.history)
-                ):
-                    if compacted:
-                        logger.info(
-                            "Context compaction complete kind=%s passes=%d messages=%d->%d "
-                            "input_tokens=%d counting_method=%s elapsed_seconds=%.3f",
-                            kind,
-                            passes,
-                            len(original_history),
-                            len(self.history),
-                            count,
-                            self.token_count_method,
-                            perf_counter() - started,
-                        )
-                    return
-                if not self.history:
-                    raise LLMResolutionError("Durable memory and current input do not fit.")
-                # Largest prefix that fits the summary request; retained memory is
-                # included exactly once so later summaries replace obsolete facts.
-                selected = 0
-                compact_messages = []
-                prefix_limit = len(self.history)
-                if checkpoint_due and fits:
-                    # Freeze the ledger between checkpoints and retain the newest half of rounds.
-                    prefix_limit -= 2 * max(1, history_limit // 2)
-                for length in range(2, prefix_limit + 1, 2):
-                    candidate = [
-                        *self._fixed_messages(),
-                        *self.history[:length],
-                        prompts.summary_prompt(),
-                    ]
-                    if not self.budget.fits(
-                        await self.budget.input_tokens(candidate, summary_schema, "summary")
-                        + self.budget.output_limit("summary")
-                        + 512,
-                        "summary",
-                    ):
-                        break
-                    selected, compact_messages = length, candidate
-                if not selected and fits:
-                    logger.info(
-                        "Context compaction deferred kind=%s reason=no_summary_fits "
-                        "retained_messages=%d passes=%d",
-                        kind,
-                        len(self.history),
-                        passes,
-                    )
-                    return
-                if not selected:
-                    raise LLMResolutionError("History cannot be safely summarized within budget.")
-                passes += 1
-                logger.info(
-                    "Context compaction started kind=%s pass=%d reason=%s "
-                    "selected_messages=%d input_tokens=%d context_window=%d counting_method=%s",
-                    kind,
-                    passes,
-                    "history_limit" if checkpoint_due and fits else "token_budget",
-                    selected,
-                    count,
-                    self.context_window_size,
-                    self.token_count_method,
-                )
-                summary = await self._parse(compact_messages, summary_schema, "summary")
-                check_semantics(summary, tuple(self._known_player_names) or None)
-                if not summary.world_state.strip():
-                    raise LLMResolutionError(
-                        "Summary has no world state; original memory retained."
-                    )
-                memory = {
-                    "role": "user",
-                    "content": "Durable historical memory:\n" + summary.model_dump_json(),
-                }
-                before = self.budget.context_size(
-                    [*([self.memory] if self.memory else []), *self.history[:selected]]
-                )
-                if self.budget.context_size([memory]) >= before:
-                    raise LLMResolutionError(
-                        "Summary did not reduce context; original memory retained."
-                    )
-                logger.info("Context compaction audit started kind=%s pass=%d", kind, passes)
-                await auditing.audit_summary(self._parse, compact_messages, summary)
-                self.memory = memory
-                self.history = self.history[selected:]
-                compacted = True
-                logger.info(
-                    "Context compaction pass accepted kind=%s pass=%d "
-                    "estimated_memory_tokens=%d->%d",
-                    kind,
-                    passes,
-                    before,
-                    self.budget.context_size([memory]),
-                )
-        except BaseException as exc:
-            # Cancellation must not leave a half-compacted conversation either.
-            self.memory, self.history = original_memory, original_history
-            logger.warning(
-                "Context compaction rolled back kind=%s error=%s passes=%d "
-                "restored_messages=%d elapsed_seconds=%.3f",
-                kind,
-                type(exc).__name__,
-                passes,
-                len(original_history),
-                perf_counter() - started,
-            )
-            raise
+    async def _compact_if_needed(self, prompt, schema, kind):
+        await compaction.compact(self, prompt, schema, kind)
 
     async def close(self) -> None:
         """Close the OpenAI and HTTP clients."""
