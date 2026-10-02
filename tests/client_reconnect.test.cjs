@@ -5,7 +5,9 @@ const { randomUUID, createHash } = require("node:crypto");
 const vm = require("node:vm");
 const path = require("node:path");
 
-const source = readFileSync(path.join(__dirname, "../static/js/app.js"), "utf8");
+const source = ["state", "identity", "rendering", "transport", "app"]
+    .map((name) => readFileSync(path.join(__dirname, `../static/js/${name}.js`), "utf8"))
+    .join("\n");
 
 function storage() {
     const values = new Map();
