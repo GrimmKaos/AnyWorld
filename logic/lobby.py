@@ -88,7 +88,7 @@ class LobbyMixin:
                     raise ValueError("Invalid password for this session.")
                 reconnect_token = data.get("reconnect_token")
                 if not isinstance(reconnect_token, str) or not hmac.compare_digest(
-                    reconnect_token, existing.reconnect_token
+                    reconnect_token.encode("utf-8"), existing.reconnect_token.encode("ascii")
                 ):
                     raise ValueError("Invalid reconnect token for this session.")
             elif self.state is GameState.AWAITING_HOST:

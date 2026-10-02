@@ -30,7 +30,11 @@ def isolated_settings(monkeypatch):
     monkeypatch.setattr(
         settings,
         "server",
-        ServerConfig(host_password="test-host-password", player_password="test-player-password"),
+        ServerConfig(
+            host_password="test-host-password",
+            player_password="test-player-password",
+            allow_missing_origin=True,
+        ),
     )
     monkeypatch.setattr(
         settings,

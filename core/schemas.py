@@ -125,3 +125,36 @@ class AuditVerdict(StrictModel):
 
     preserved: bool
     corrections: list[str] = Field(default_factory=list)
+
+
+class AuthInput(StrictModel):
+    name: str = Field(min_length=1, max_length=40)
+    password_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    reconnect_token: str | None = Field(default=None, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+class ChatInput(StrictModel):
+    message: str = Field(min_length=1, max_length=1000)
+
+
+class ActionInput(StrictModel):
+    action: str = Field(min_length=1, max_length=4000)
+    action_id: str | None = Field(default=None, min_length=1, max_length=64)
+    session_id: str | None = Field(default=None, max_length=36)
+    round_number: int | None = Field(default=None, ge=1)
+
+
+class ScenarioInput(StrictModel):
+    scenario: str = Field(min_length=1, max_length=20000)
+    guidance: str = Field(default="", max_length=5000)
+    chance_event: str = Field(default="", max_length=1000)
+
+
+def validate_client_data(payload: ClientPayload) -> None:
+    schema = {
+        "auth": AuthInput,
+        "chat": ChatInput,
+        "action": ActionInput,
+        "scenario_init": ScenarioInput,
+    }.get(payload.event_type, StrictModel)
+    schema.model_validate(payload.data)

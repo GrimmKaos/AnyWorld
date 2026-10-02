@@ -59,6 +59,9 @@ def main() -> None:
         # Keep idle WAN WebSocket connections alive through NAT/proxies.
         ws_ping_interval=20,
         ws_ping_timeout=20,
+        ws_max_size=settings.server.max_message_bytes,
+        # Preserve the direct peer; application admission validates the proxy chain.
+        proxy_headers=False,
     )
 
 

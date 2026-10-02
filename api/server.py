@@ -13,7 +13,8 @@ from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 
 from core.config import settings
-from core.schemas import ClientPayload, ServerEvent
+from core.schemas import ClientPayload, ServerEvent, validate_client_data
+from api.admission import WindowBudget, receive_payload, origin_allowed, source_address
 from logic.engine import GameEngine
 from logic.llm_manager import LLMContextManager
 
@@ -22,41 +23,35 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class ConnectionManager:
-    """Pending sockets are never broadcast subscribers.
-
-    All dictionary operations are synchronous on the ASGI event loop. Promotion is
-    invoked inside the engine authentication lock, without performing network I/O.
-    """
+    """Pending sockets are private; each socket owns a bounded ordered writer."""
 
     def __init__(self) -> None:
-        """Track pending sockets and the active connection for each client."""
         self.active_connections: dict[str, WebSocket] = {}
         self.pending: set[WebSocket] = set()
-        self._send_locks: dict[WebSocket, asyncio.Lock] = {}
+        self._queues: dict[WebSocket, asyncio.Queue] = {}
+        self._writers: dict[WebSocket, asyncio.Task] = {}
+        self._bytes: dict[WebSocket, int] = {}
+        self._ids: dict[WebSocket, str] = {}
+        self._cleanup_tasks: set[asyncio.Task] = set()
+        self.on_disconnect = None
 
     async def connect(self, client_id: str, websocket: WebSocket) -> bool:
-        """Accept a pending socket, closing it if the pending cap is reached.
-
-        ``client_id`` is intentionally unused here: the socket is unauthenticated
-        until the gateway promotes it, so pending connections are tracked by socket
-        identity rather than by a caller-controlled client identifier.
-        """
-        del client_id
         if len(self.pending) >= settings.server.max_pending_connections:
             await websocket.close(code=1013, reason="Too many pending connections")
             return False
         self.pending.add(websocket)
-        self._send_locks[websocket] = asyncio.Lock()
+        self._ids[websocket] = client_id
+        self._queues[websocket] = asyncio.Queue(settings.server.send_queue_messages)
+        self._bytes[websocket] = 0
         try:
             await websocket.accept()
         except BaseException:
-            self.pending.discard(websocket)
-            self._send_locks.pop(websocket, None)
+            self._forget(websocket)
             raise
+        self._writers[websocket] = asyncio.create_task(self._write(websocket))
         return True
 
     def promote(self, client_id: str, websocket: WebSocket) -> WebSocket | None:
-        """Move an authenticated socket into the active map, returning any replaced socket."""
         if websocket not in self.pending:
             raise ValueError("Connection is no longer pending authentication.")
         previous = self.active_connections.get(client_id)
@@ -65,57 +60,87 @@ class ConnectionManager:
         return previous
 
     def owns(self, client_id: str, websocket: WebSocket) -> bool:
-        """Return whether the socket is the current active connection for the client."""
         return self.active_connections.get(client_id) is websocket
 
-    async def disconnect(self, client_id: str, websocket: WebSocket) -> bool:
-        """Remove a socket if it is the active connection for the client."""
+    def _forget(self, websocket: WebSocket) -> bool:
         self.pending.discard(websocket)
-        self._send_locks.pop(websocket, None)
-        if not self.owns(client_id, websocket):
-            return False
-        del self.active_connections[client_id]
-        return True
+        client_id = self._ids.pop(websocket, None)
+        removed = client_id is not None and self.owns(client_id, websocket)
+        if removed:
+            del self.active_connections[client_id]
+        self._queues.pop(websocket, None)
+        self._bytes.pop(websocket, None)
+        writer = self._writers.pop(websocket, None)
+        if writer is not None and writer is not asyncio.current_task():
+            writer.cancel()
+        return removed
+
+    async def disconnect(self, client_id: str, websocket: WebSocket) -> bool:
+        return self._forget(websocket)
 
     async def broadcast_global(self, event: ServerEvent) -> None:
-        """Send an event to all active connections."""
         await self._broadcast(event)
 
     async def broadcast_except(self, client_id: str, event: ServerEvent) -> None:
-        """Send an event to all active connections except one client."""
-        await self._broadcast(event, exclude=client_id)
+        await self._broadcast(event, client_id)
 
     async def _broadcast(self, event: ServerEvent, exclude: str | None = None) -> None:
-        """Serialize and send an event to all active connections, optionally excluding one."""
         message = event.model_dump_json()
-        sockets = [socket for item, socket in self.active_connections.items() if item != exclude]
-        await asyncio.gather(*(self._send_text(socket, message) for socket in sockets))
+        for item, socket in list(self.active_connections.items()):
+            if item != exclude:
+                self._enqueue(socket, message)
+        await asyncio.sleep(0)
 
     async def send_personal(self, client_id: str, event: ServerEvent) -> None:
-        """Send an event to a single client's active connection."""
-        websocket = self.active_connections.get(client_id)
-        if websocket is not None:
-            await self.send_socket(websocket, event)
+        socket = self.active_connections.get(client_id)
+        if socket is not None:
+            await self.send_socket(socket, event)
 
     async def send_socket(self, websocket: WebSocket, event: ServerEvent) -> None:
-        """Send an event to a specific socket."""
-        await self._send_text(websocket, event.model_dump_json())
+        self._enqueue(websocket, event.model_dump_json())
+        await asyncio.sleep(0)
 
-    async def _send_text(self, websocket: WebSocket, message: str) -> None:
-        """Send serialized text under the socket's send lock, closing on failure."""
-        lock = self._send_locks.get(websocket)
-        if lock is None:
+    def _enqueue(self, websocket: WebSocket, message: str) -> None:
+        queue = self._queues.get(websocket)
+        if queue is None:
             return
+        size = len(message.encode("utf-8"))
+        if queue.full() or self._bytes[websocket] + size > settings.server.send_queue_bytes:
+            self._fail(websocket)
+            return
+        self._bytes[websocket] += size
+        queue.put_nowait((message, size))
+
+    async def _write(self, websocket: WebSocket) -> None:
+        queue = self._queues[websocket]
         try:
-            async with asyncio.timeout(5):
-                async with lock:
-                    await websocket.send_text(message)
+            while True:
+                message, size = await queue.get()
+                try:
+                    async with asyncio.timeout(5):
+                        await websocket.send_text(message)
+                finally:
+                    if websocket in self._bytes:
+                        self._bytes[websocket] -= size
+                    queue.task_done()
         except (TimeoutError, RuntimeError, OSError, WebSocketDisconnect):
-            await self.close_socket(websocket)
+            self._fail(websocket)
+
+    def _fail(self, websocket: WebSocket) -> None:
+        client_id = self._ids.get(websocket)
+        removed = self._forget(websocket)
+
+        async def clean():
+            if removed and self.on_disconnect is not None:
+                await self.on_disconnect(client_id)
+            await self.close_socket(websocket, code=1013)
+
+        task = asyncio.create_task(clean())
+        self._cleanup_tasks.add(task)
+        task.add_done_callback(self._cleanup_tasks.discard)
 
     @staticmethod
     async def close_socket(websocket: WebSocket, code: int = 1000) -> None:
-        """Close a socket, tolerating errors and timeouts."""
         try:
             async with asyncio.timeout(2):
                 await websocket.close(code=code)
@@ -123,12 +148,18 @@ class ConnectionManager:
             pass
 
     async def close(self) -> None:
-        """Close all active and pending sockets and clear the connection maps."""
-        sockets = set(self.active_connections.values()) | self.pending
+        sockets = set(self._queues)
+        writers = list(self._writers.values())
+        for socket in sockets:
+            self._forget(socket)
+        if writers:
+            await asyncio.gather(*writers, return_exceptions=True)
         await asyncio.gather(*(self.close_socket(socket) for socket in sockets))
-        self.active_connections.clear()
-        self.pending.clear()
-        self._send_locks.clear()
+        cleanups = list(self._cleanup_tasks)
+        for task in cleanups:
+            task.cancel()
+        if cleanups:
+            await asyncio.gather(*cleanups, return_exceptions=True)
 
 
 def create_app(resolver_factory=LLMContextManager) -> FastAPI:
@@ -140,6 +171,23 @@ def create_app(resolver_factory=LLMContextManager) -> FastAPI:
         settings.server.validate_passwords()
         manager = ConnectionManager()
         engine = GameEngine(manager, resolver_factory())
+
+        async def lost(client_id):
+            await engine.handle_disconnect(
+                client_id, still_disconnected=lambda: client_id not in manager.active_connections
+            )
+
+        manager.on_disconnect = lost
+        application.state.source_failures = WindowBudget(
+            settings.server.failed_logins_per_source, 60
+        )
+        application.state.global_failures = WindowBudget(
+            settings.server.failed_logins_global, 60, 1
+        )
+        application.state.player_messages = WindowBudget(
+            settings.server.player_messages_per_window,
+            settings.server.player_message_window_seconds,
+        )
         application.state.manager = manager
         application.state.engine = engine
         try:
@@ -170,6 +218,15 @@ def create_app(resolver_factory=LLMContextManager) -> FastAPI:
             return
         manager = websocket.app.state.manager
         engine = websocket.app.state.engine
+        source = source_address(websocket)
+        source_failures = websocket.app.state.source_failures
+        global_failures = websocket.app.state.global_failures
+        if not origin_allowed(websocket):
+            await websocket.close(code=1008, reason="Origin is not allowed")
+            return
+        if source_failures.blocked(source) or global_failures.blocked("global"):
+            await websocket.close(code=1013, reason="Authentication temporarily limited")
+            return
         if not await manager.connect(client_id, websocket):
             return
         deadline = asyncio.get_running_loop().time() + settings.server.auth_timeout_seconds
@@ -181,13 +238,17 @@ def create_app(resolver_factory=LLMContextManager) -> FastAPI:
                     if not authenticated:
                         attempts += 1
                         async with asyncio.timeout_at(deadline):
-                            raw_payload = await websocket.receive_json()
+                            raw_payload = await receive_payload(websocket)
                     else:
-                        raw_payload = await websocket.receive_json()
+                        raw_payload = await receive_payload(websocket)
                     payload = ClientPayload.model_validate(raw_payload)
+                    validate_client_data(payload)
                     if not authenticated:
                         if payload.event_type != "auth":
                             raise ValueError("Authenticate before sending game messages.")
+                        if source_failures.blocked(source) or global_failures.blocked("global"):
+                            await manager.close_socket(websocket, code=1013)
+                            break
                         previous = []
                         await engine._authenticate(
                             client_id,
@@ -196,18 +257,23 @@ def create_app(resolver_factory=LLMContextManager) -> FastAPI:
                         )
                         authenticated = True
                         if previous and previous[0] is not None:
-                            await manager.close_socket(previous[0])
+                            await manager.close_socket(previous[0], code=4001)
                     elif not manager.owns(client_id, websocket):
                         break
                     elif payload.event_type == "auth":
                         raise ValueError("This socket is already authenticated.")
                     else:
+                        if not websocket.app.state.player_messages.accept(client_id):
+                            raise ValueError("Message rate exceeded; please wait.")
                         await engine.process_payload(
                             client_id,
                             payload,
                             authorize=lambda: manager.owns(client_id, websocket),
                         )
                 except (ValidationError, ValueError) as exc:
+                    if not authenticated:
+                        source_failures.record(source)
+                        global_failures.record("global")
                     message = (
                         "Invalid message schema." if isinstance(exc, ValidationError) else str(exc)
                     )

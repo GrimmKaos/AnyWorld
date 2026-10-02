@@ -325,6 +325,11 @@ class LLMContextManager:
                 if name in (hidden_rolls or set())
             },
             private_events=chance_events,
+            public_rolls={
+                name: value
+                for name, value in (dice_results or {}).items()
+                if name not in (hidden_rolls or set())
+            },
             history_prompt=prompts.round_memory_prompt(
                 round_buffer, self.usage_round, dice_results, hidden_rolls, chance_events
             ),
@@ -427,6 +432,7 @@ class LLMContextManager:
         include_history: bool = True,
         kind: str = "round",
         private_rolls: dict[str, int] | None = None,
+        public_rolls: dict[str, int] | None = None,
         private_events: list[ChanceEventResult] | None = None,
         chance_decision: ChanceRuleDecision | None = None,
         planning_input: dict[str, Any] | None = None,
@@ -507,7 +513,7 @@ class LLMContextManager:
                     checks.update(
                         {f"event-{i}": event.roll for i, event in enumerate(private_events or [])}
                     )
-                    check_public_output(result, checks, self.private_guidance)
+                    check_public_output(result, checks, self.private_guidance, public_rolls)
                     if private_events:
                         public_text = " ".join(
                             [

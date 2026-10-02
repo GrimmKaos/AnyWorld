@@ -70,7 +70,10 @@ def check_semantics(result: BaseModel, names: tuple[str, ...] | None) -> None:
 
 
 def check_public_output(
-    result: RoundResolution, private_rolls: dict[str, int], guidance: str
+    result: RoundResolution,
+    private_rolls: dict[str, int],
+    guidance: str,
+    public_rolls: dict[str, int] | None = None,
 ) -> None:
     """Reject direct guidance echoes and explicit hidden dice disclosures.
 
@@ -82,11 +85,20 @@ def check_public_output(
     normalized = " ".join(text.casefold().split())
     fragments = re.split(r"[.!?\n]+", guidance)
     if any(
-        len(fragment.strip()) >= 16 and " ".join(fragment.casefold().split()) in normalized
+        len(fragment.strip()) >= 4
+        and re.search(
+            r"(?<!\w)" + re.escape(" ".join(fragment.casefold().split())) + r"(?!\w)", normalized
+        )
         for fragment in fragments
     ):
         raise LLMResolutionError("Model output disclosed private guidance; no result committed.")
-    for value in private_rolls.values():
+    for name, value in private_rolls.items():
+        if value in (public_rolls or {}).values() and not re.search(
+            rf"(?:hidden|private|secret|{re.escape(name)})[^.!?\n]{{0,80}}\b{value}\b",
+            text,
+            re.IGNORECASE,
+        ):
+            continue
         if re.search(
             rf"\b(?:rolled?|check|d100|dice)\b[^.!?\n]{{0,80}}\b{value}\b", text, re.IGNORECASE
         ) or re.search(rf"\b{value}\s*/\s*100\b", text):
