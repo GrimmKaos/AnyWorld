@@ -144,7 +144,7 @@ def test_scenario_title_is_generated_before_game_start(tmp_path: Path) -> None:
         start_update = sender.events_of_type("state_update")[-1]
         assert start_update.payload["scenario_title"] == "The Test Quest"
         assert start_update.payload["global_narrative"] == "Host stand at a gate."
-        assert "original_scenario" not in start_update.payload
+        assert start_update.payload["original_scenario"] == "A gate blocks the road."
 
     asyncio.run(run())
 
@@ -282,7 +282,9 @@ def test_chat_remains_available_outside_turns(tmp_path: Path) -> None:
         await engine.process_payload("player", payload("chat", message="Ready!"))
 
         chat_event = sender.events_of_type("chat_echo")[-1]
-        assert chat_event.payload == {"name": "Player", "chat": "Ready!"}
+        assert chat_event.payload["name"] == "Player"
+        assert chat_event.payload["chat"] == "Ready!"
+        assert chat_event.payload["session_id"] == engine.session_id
 
     asyncio.run(run())
 

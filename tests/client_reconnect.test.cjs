@@ -65,8 +65,9 @@ function browser(localStorage = storage(), sessionStorage = storage()) {
     const runtime = {
         window, sessionStorage, WebSocket: Socket, setTimeout, clearTimeout, console,
         MutationObserver: class { observe() {} },
-        document: { getElementById: node, createElement: node,
-            createDocumentFragment: () => node("fragment"), addEventListener() {} },
+        document: { getElementById: node, createElement: node, listeners: {},
+            createDocumentFragment: () => node("fragment"),
+            addEventListener(type, callback) { this.listeners[type] = callback; } },
     };
     vm.runInNewContext(source, runtime);
     return {
@@ -187,6 +188,33 @@ test("incoming chat preserves action focus and does not pull a reader to the bot
     tab.sockets[0].receive("chat_echo", { name: "Other", chat: "Hello" });
     assert.equal(focused, 1);
     assert.equal(chat.scrollTop, 10);
+});
+
+test("history modal traps Tab in both directions and restores prior focus", async () => {
+    const tab = await joined();
+    const document = tab.runtime.document;
+    for (const id of ["login-modal", "host-modal", "history-modal"]) tab.node(id).hidden = true;
+    tab.runtime.syncModalFocus();
+    const action = tab.node("action-input");
+    action.focus = () => { document.activeElement = action; };
+    action.focus();
+    const first = tab.node("history-search");
+    const last = tab.node("history-close");
+    first.focus = () => { document.activeElement = first; };
+    last.focus = () => { document.activeElement = last; };
+    const modal = tab.node("history-modal");
+    modal.querySelectorAll = () => [first, last];
+    modal.contains = (element) => [first, last].includes(element);
+    modal.hidden = false;
+    tab.runtime.syncModalFocus();
+    assert.equal(document.activeElement, first);
+    document.listeners.keydown({ key: "Tab", shiftKey: true, preventDefault() {} });
+    assert.equal(document.activeElement, last);
+    document.listeners.keydown({ key: "Tab", shiftKey: false, preventDefault() {} });
+    assert.equal(document.activeElement, first);
+    modal.hidden = true;
+    tab.runtime.syncModalFocus();
+    assert.equal(document.activeElement, action);
 });
 
 test("a reopened tab recovers its identity after name and password entry", async () => {

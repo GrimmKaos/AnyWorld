@@ -275,7 +275,9 @@ class LobbyMixin:
                 self.state = GameState.ACTIVE_TURN
                 directive = self._next_turn_locked()
             payload = resolution.model_dump()
-            payload.update(scenario_title=self.scenario_title)
+            payload.update(
+                scenario_title=self.scenario_title, original_scenario=self.original_scenario
+            )
             await self._broadcast(ServerEvent(type="state_update", payload=payload))
             await self._broadcast(
                 ServerEvent(type="system_msg", payload={"msg": "The game has started."})

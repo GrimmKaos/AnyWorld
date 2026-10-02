@@ -5,6 +5,7 @@ function requestJournal(mode, after = 0, search = "") {
 }
 
 function handleJournalPage(payload) {
+    if (payload.incomplete) elements.connectionStatus.textContent = "Connected; some archived history is unavailable.";
     if (payload.mode === "replay") {
         payload.events.forEach((event) => {
             // The snapshot already supplies the opening separately.

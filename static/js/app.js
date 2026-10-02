@@ -9,7 +9,11 @@ function handleMessage(message, replayed = false) {
     if (type !== "auth_ok" && payload.session_id && payload.session_id !== clientSession.sessionId) return;
     if (type === "journal_page") { handleJournalPage(payload); return; }
     if (clientSession.replaying && !replayed &&
-        !["auth_ok", "error", "chat_echo", "token_usage", "action_accepted"].includes(type)) {
+        !["auth_ok", "error", "token_usage", "action_accepted"].includes(type)) {
+        if (clientSession.liveEvents.length >= 512) {
+            clientSession.ws.close();
+            return;
+        }
         clientSession.liveEvents.push(message);
         return;
     }
@@ -18,6 +22,8 @@ function handleMessage(message, replayed = false) {
         clientSession.cursor = payload.event_id;
     }
     if (type === "auth_ok") {
+        clientSession.liveEvents = [];
+        clientSession.liveEvents = [];
         if (payload.session_id && payload.session_id !== clientSession.sessionId) {
             clientSession.cursor = 0;
             clientSession.renderedRounds.clear();
@@ -75,6 +81,7 @@ function handleMessage(message, replayed = false) {
             payload.player_color_index,
         );
     } else if (type === "state_update") {
+        appendScenario(payload.original_scenario, true);
         if (!replayed) setThinking(false);
         setPlayerOrder(payload.player_order);
         if (payload.scenario_title) {

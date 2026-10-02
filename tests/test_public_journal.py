@@ -59,3 +59,27 @@ def test_duplicate_action_acknowledgment_and_complete_snapshot(tmp_path):
         await engine.shutdown()
 
     asyncio.run(run())
+
+
+def test_journal_disk_failure_replays_bounded_pending_events_once(monkeypatch):
+    async def run():
+        journal = PublicJournal("session-test")
+        append = journal._append_batch
+
+        def fail(events):
+            raise OSError("injected failure")
+
+        monkeypatch.setattr(journal, "_append_batch", fail)
+        first = await journal.record(
+            ServerEvent(type="chat_echo", payload={"name": "Alice", "chat": "Hello"})
+        )
+        assert first.payload["event_id"] == 1
+        assert len((await journal.page(0, 100, ""))["events"]) == 1
+        monkeypatch.setattr(journal, "_append_batch", append)
+        await journal.record(ServerEvent(type="round_start", payload={"round_number": 1}))
+        page = await journal.page(0, 100, "")
+        assert [event["payload"]["event_id"] for event in page["events"]] == [1, 2]
+        assert not journal._pending
+        assert len(journal.path.read_text().splitlines()) == 2
+
+    asyncio.run(run())
