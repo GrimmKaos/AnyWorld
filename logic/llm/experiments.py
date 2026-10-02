@@ -49,6 +49,7 @@ class FactLedger:
     def stage(self, deltas: list[FactDelta]) -> LedgerCheckpoint:
         if not self.enabled:
             raise RuntimeError("Fact-ledger experiment is disabled.")
+        deltas = [FactDelta.model_validate(delta.model_dump()) for delta in deltas]
         if len(deltas) > 128 or len({delta.key for delta in deltas}) != len(deltas):
             raise ValueError("Fact deltas must be bounded and unique.")
         facts = []
