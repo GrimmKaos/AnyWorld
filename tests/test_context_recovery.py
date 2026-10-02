@@ -8,6 +8,9 @@ from core.config import settings
 from core.schemas import ContextSummary, RoundResolution, SummaryAudit
 from logic.llm_manager import LLMContextManager
 from support import FakeClient, memory
+from openai import APIConnectionError
+import pytest
+from logic.llm.errors import LLMResolutionError
 
 
 def test_failed_optional_checkpoint_does_not_block_a_fitting_round():
@@ -61,6 +64,27 @@ def test_concurrent_schema_counts_share_backend_work():
         assert counts == [3] * 5
         assert paths == ["/apply-template", "/tokenize"]
         assert manager.budget._cache_bytes == len("A stable fact.")
+        await manager.close()
+
+    asyncio.run(run())
+
+
+def test_exhausted_summary_transport_does_not_trigger_semantic_repair():
+    async def run():
+        settings.llm.max_retries = 0
+        error = APIConnectionError(request=httpx.Request("POST", "http://offline.test/v1"))
+        client = FakeClient(error)
+        manager = LLMContextManager(client)
+        manager.context_window_size = 8192
+        manager.history = [
+            {"role": "user" if index % 2 == 0 else "assistant", "content": "Fact. " * 200}
+            for index in range(10)
+        ]
+        original = list(manager.history)
+        with pytest.raises(LLMResolutionError):
+            await manager.generate_resolution({"Alice": "Wait"})
+        assert len(client.calls) == 1
+        assert manager.history == original
         await manager.close()
 
     asyncio.run(run())

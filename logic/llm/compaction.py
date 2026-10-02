@@ -1,6 +1,7 @@
 """Transactional bounded conversation compaction."""
 
 import logging
+from openai import OpenAIError
 from time import perf_counter
 from pydantic import BaseModel
 from core.config import settings
@@ -124,10 +125,12 @@ async def compact(self, prompt: dict[str, str], schema: type[BaseModel], kind: s
                 memory = await _checkpoint(
                     self, compact_messages, summary_schema, selected, kind, passes
                 )
-            except LLMResolutionError:
+            except LLMResolutionError as exc:
                 if fits:
                     logger.info("Context compaction deferred kind=%s reason=optional_failure", kind)
                     return
+                if isinstance(exc.__cause__, (OpenAIError, TimeoutError)):
+                    raise
                 smaller = 2 * (selected // 4)
                 if smaller < 2:
                     raise
@@ -219,6 +222,8 @@ async def _checkpoint(self, messages, schema, selected, kind, passes, *, repair=
             # The caller measures the complete upcoming request again before inference.
             return memory
         except LLMResolutionError as exc:
+            if isinstance(exc.__cause__, (OpenAIError, TimeoutError)):
+                raise
             if attempt or not repair:
                 raise
             corrections = exc.corrections if isinstance(exc, SummaryRejectedError) else [str(exc)]
