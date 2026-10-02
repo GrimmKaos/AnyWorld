@@ -47,7 +47,7 @@ function browser(localStorage = storage(), sessionStorage = storage()) {
         addEventListener(type, callback) { this.listeners[type] = callback; }
         open() { this.readyState = 1; this.listeners.open(); }
         send(data) { this.sent.push(JSON.parse(data)); }
-        close() { this.readyState = 3; this.listeners.close?.(); }
+        close(code = 1006) { this.readyState = 3; this.listeners.close?.({ code }); }
         receive(type, payload) { this.listeners.message({ data: JSON.stringify({ type, payload }) }); }
     }
     const timers = new Map();
@@ -82,7 +82,7 @@ function browser(localStorage = storage(), sessionStorage = storage()) {
             });
         },
         reconnect() {
-            const timer = [...timers.values()].find(({ delay }) => delay === 1000);
+            const timer = [...timers.values()].find(({ delay }) => delay >= 800 && delay <= 1200);
             assert.ok(timer, "A reconnect should be scheduled");
             timer.callback();
             return sockets.at(-1);
@@ -111,6 +111,44 @@ test("same-tab disconnect automatically reuses authenticated credentials", async
     tab.accept(next);
     assert.equal(tab.node("login-modal").hidden, true);
     assert.equal(tab.node("chat-input").disabled, false);
+});
+
+test("replacement requires explicit reclaim and authentication rejection stops retries", async () => {
+    const tab = await joined();
+    tab.sockets[0].close(4001);
+    assert.equal(tab.node("reclaim-button").hidden, false);
+    assert.throws(() => tab.reconnect(), /reconnect should be scheduled/);
+    tab.node("reclaim-button").listeners.click();
+    assert.equal(tab.sockets.length, 2);
+    const reclaimed = tab.sockets.at(-1);
+    reclaimed.open();
+    reclaimed.close(1008);
+    assert.equal(tab.node("login-modal").hidden, false);
+    assert.equal(JSON.parse(tab.sessionStorage.getItem("artificialDungeonAuth")), null);
+});
+
+test("draft survives a lost acknowledgment and only its scoped ID clears it", async () => {
+    const tab = await joined();
+    const socket = tab.sockets[0];
+    socket.receive("auth_ok", { name: "Arxs", reconnect_token: "private-token", state: "ACTIVE_TURN",
+        session_id: "session-a", round_number: 1, active_player_id: socket.url.split("/").at(-1),
+        player_order: [], players: [] });
+    tab.node("action-input").value = "Wait at the gate";
+    tab.node("input-pane").listeners.submit({ preventDefault() {} });
+    const sent = socket.sent.at(-1).data;
+    assert.equal(sent.session_id, "session-a");
+    assert.equal(tab.node("action-input").value, sent.action);
+    socket.receive("action_accepted", { ...sent, round_number: 2 });
+    assert.equal(tab.node("action-input").value, sent.action);
+    socket.close();
+    const next = tab.reconnect();
+    next.open();
+    next.receive("auth_ok", { name: "Arxs", reconnect_token: "private-token", state: "ACTIVE_TURN",
+        session_id: "session-a", round_number: 1, active_player_id: socket.url.split("/").at(-1),
+        player_order: [], players: [] });
+    assert.equal(next.sent.at(-1).data.action_id, sent.action_id);
+    next.receive("action_accepted", sent);
+    assert.equal(tab.node("action-input").value, "");
 });
 
 test("a reopened tab recovers its identity after name and password entry", async () => {

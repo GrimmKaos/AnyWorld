@@ -28,7 +28,6 @@ function connectSocket() {
     socket.addEventListener("open", () => {
         if (clientSession.ws !== socket) return;
         clearTimeout(clientSession.connectionTimer);
-        clientSession.reconnectAttempts = 0;
         elements.connectionStatus.textContent = clientSession.savedAuth ? "Rejoining..." : "Connected";
         if (clientSession.savedAuth) {
             socket.send(JSON.stringify({ event_type: "auth", data: clientSession.savedAuth }));
@@ -43,14 +42,26 @@ function connectSocket() {
             showError("Received an invalid server message.");
         }
     });
-    socket.addEventListener("close", () => {
+    socket.addEventListener("close", (event = {}) => {
         if (clientSession.ws !== socket) return;
         clearTimeout(clientSession.connectionTimer);
         clientSession.authenticated = false;
         elements.connectionStatus.textContent = "Reconnecting...";
         elements.actionInput.disabled = true;
         elements.chatInput.disabled = true;
-        const delay = Math.min(1000 * (2 ** clientSession.reconnectAttempts), 15000);
+        if (event.code === 4001 || event.code === 1008) {
+            clientSession.replaced = event.code === 4001;
+            elements.reclaimButton.hidden = !clientSession.replaced;
+            elements.connectionStatus.textContent = clientSession.replaced
+                ? "Replaced by another tab. Reclaim explicitly to reconnect." : "Authentication required.";
+            if (!clientSession.replaced) {
+                rememberAuth(null);
+                elements.loginModal.hidden = false;
+            }
+            return;
+        }
+        const delay = Math.round(Math.min(1000 * (2 ** clientSession.reconnectAttempts), 15000)
+            * (0.8 + Math.random() * 0.4));
         clientSession.reconnectAttempts += 1;
         clientSession.reconnectTimer = window.setTimeout(connectSocket, delay);
     });

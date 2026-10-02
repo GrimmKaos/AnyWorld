@@ -28,6 +28,25 @@ function readStoredObject(storageName, key) {
 const storedId = readStored("sessionStorage", "artificialDungeonClientId");
 clientSession.clientId = storedId || createClientId();
 clientSession.savedAuth = readStoredObject("sessionStorage", "artificialDungeonAuth");
+const savedDraft = readStoredObject("sessionStorage", "artificialDungeonDraft");
+elements.actionInput.value = typeof savedDraft?.text === "string" ? savedDraft.text : "";
+clientSession.pendingAction = savedDraft?.pending || null;
+
+function saveDraft() {
+    writeStored("sessionStorage", "artificialDungeonDraft", JSON.stringify({
+        text: elements.actionInput.value, pending: clientSession.pendingAction,
+    }));
+}
+
+function acceptAction(payload) {
+    const pending = clientSession.pendingAction;
+    if (pending && payload.session_id === pending.session_id &&
+        payload.round_number === pending.round_number && payload.action_id === pending.action_id) {
+        if (elements.actionInput.value.trim() === pending.action) elements.actionInput.value = "";
+        clientSession.pendingAction = null;
+        saveDraft();
+    }
+}
 
 // crypto.randomUUID() is unavailable on non-secure HTTP origins except localhost.
 // Use a standards-compatible fallback so remote HTTP clients do not fail before

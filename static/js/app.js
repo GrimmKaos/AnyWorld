@@ -7,6 +7,12 @@ function handleMessage(message) {
         return;
     }
     if (type === "auth_ok") {
+        clientSession.reconnectAttempts = 0;
+        clientSession.replaced = false;
+        elements.reclaimButton.hidden = true;
+        clientSession.sessionId = payload.session_id || clientSession.sessionId;
+        clientSession.roundNumber = payload.round_number || null;
+        (payload.accepted_actions || []).forEach(acceptAction);
         rememberAuth({ ...clientSession.savedAuth, name: payload.name, reconnect_token: payload.reconnect_token });
         // Persist only the identity proof, never the password or password digest.
         // A reopened tab still asks for credentials before it can reclaim this player.
@@ -21,11 +27,23 @@ function handleMessage(message) {
         elements.grid.hidden = false;
         elements.loginError.textContent = "";
         applySnapshot(payload);
+        const pending = clientSession.pendingAction;
+        // Reuse the original ID only in its original session and round.
+        if (pending && pending.session_id === clientSession.sessionId &&
+            pending.round_number === clientSession.roundNumber && payload.state === "ACTIVE_TURN" &&
+            payload.active_player_id === clientSession.clientId) {
+            send("action", pending);
+            elements.actionInput.disabled = true;
+        }
+    } else if (type === "action_accepted") {
+        acceptAction(payload);
     } else if (type === "turn_directive") {
+        clientSession.roundNumber = payload.round_number;
         startRound(payload.round_number);
         syncActions(payload.round_number, payload.submitted_actions);
         applyTurn(payload.active_player_id, payload.active_player_name);
     } else if (type === "round_start") {
+        clientSession.roundNumber = payload.round_number;
         startRound(payload.round_number);
     } else if (type === "action_echo") {
         showAction(
@@ -172,6 +190,7 @@ elements.loginForm.addEventListener("submit", async (event) => {
             ),
         };
         rememberAuth(auth);
+        elements.password.value = "";
         if (targetId !== clientSession.clientId || clientSession.ws.readyState !== WebSocket.OPEN) {
             clientSession.clientId = targetId;
             writeStored("sessionStorage", "artificialDungeonClientId", clientSession.clientId);
@@ -228,10 +247,22 @@ elements.chatForm.addEventListener("submit", (event) => {
 elements.actionForm.addEventListener("submit", (event) => {
     event.preventDefault();
     const action = elements.actionInput.value.trim();
-    if (action && !elements.actionInput.disabled && send("action", { action })) {
-        elements.actionInput.value = "";
-        elements.actionInput.disabled = true;
+    if (action && !elements.actionInput.disabled) {
+        const previous = clientSession.pendingAction;
+        clientSession.pendingAction = previous && previous.action === action &&
+            previous.session_id === clientSession.sessionId && previous.round_number === clientSession.roundNumber
+            ? previous : { action, action_id: createClientId(), session_id: clientSession.sessionId,
+                round_number: clientSession.roundNumber };
+        saveDraft();
+        if (send("action", clientSession.pendingAction)) elements.actionInput.disabled = true;
     }
+});
+
+elements.actionInput.addEventListener("input", saveDraft);
+elements.reclaimButton.addEventListener("click", () => {
+    clientSession.replaced = false;
+    elements.reclaimButton.hidden = true;
+    connectSocket();
 });
 
 
