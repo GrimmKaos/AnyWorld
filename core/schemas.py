@@ -16,7 +16,14 @@ class ClientPayload(StrictModel):
     """Envelope for a client-to-server WebSocket message."""
 
     event_type: Literal[
-        "auth", "chat", "action", "scenario_init", "start_game", "end_game", "retry_round"
+        "auth",
+        "chat",
+        "action",
+        "scenario_init",
+        "start_game",
+        "end_game",
+        "retry_round",
+        "journal_request",
     ]
     data: dict[str, Any]
 
@@ -38,6 +45,8 @@ class ServerEvent(StrictModel):
         "dm_thinking",
         "game_ended",
         "token_usage",
+        "journal_page",
+        "action_accepted",
     ]
     payload: dict[str, Any]
 
@@ -150,11 +159,18 @@ class ScenarioInput(StrictModel):
     chance_event: str = Field(default="", max_length=1000)
 
 
+class JournalInput(StrictModel):
+    after: int = Field(default=0, ge=0)
+    limit: int = Field(default=100, ge=1, le=100)
+    search: str = Field(default="", max_length=200)
+
+
 def validate_client_data(payload: ClientPayload) -> None:
     schema = {
         "auth": AuthInput,
         "chat": ChatInput,
         "action": ActionInput,
         "scenario_init": ScenarioInput,
+        "journal_request": JournalInput,
     }.get(payload.event_type, StrictModel)
     schema.model_validate(payload.data)

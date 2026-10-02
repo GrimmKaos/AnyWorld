@@ -141,12 +141,10 @@ class LobbyMixin:
         await self.sender.send_personal(client_id, ServerEvent(type="auth_ok", payload=snapshot))
         LOGGER.info("Player authenticated reconnect=%s host=%s", rejoined, player.is_host)
         verb = "rejoined" if rejoined else "connected"
-        await self.sender.broadcast_global(
-            ServerEvent(type="system_msg", payload={"msg": f"{name} {verb}."})
-        )
+        await self._broadcast(ServerEvent(type="system_msg", payload={"msg": f"{name} {verb}."}))
         await self.sender.broadcast_except(client_id, self._player_roster_event())
         if directive is not None:
-            await self.sender.broadcast_global(directive)
+            await self._broadcast(directive)
         return True
 
     @staticmethod
@@ -166,7 +164,7 @@ class LobbyMixin:
             player = self.players.get(client_id)
             if player is None or not player.is_connected:
                 raise ValueError("Authenticate before chatting.")
-        await self.sender.broadcast_global(
+        await self._broadcast(
             ServerEvent(type="chat_echo", payload={"name": player.name, "chat": message})
         )
 
@@ -260,15 +258,13 @@ class LobbyMixin:
                 directive = self._next_turn_locked()
             payload = resolution.model_dump()
             payload.update(scenario_title=self.scenario_title)
-            await self.sender.broadcast_global(ServerEvent(type="state_update", payload=payload))
-            await self.sender.broadcast_global(
+            await self._broadcast(ServerEvent(type="state_update", payload=payload))
+            await self._broadcast(
                 ServerEvent(type="system_msg", payload={"msg": "The game has started."})
             )
-            await self.sender.broadcast_global(
-                ServerEvent(type="round_start", payload={"round_number": 1})
-            )
+            await self._broadcast(ServerEvent(type="round_start", payload={"round_number": 1}))
             if directive is not None:
-                await self.sender.broadcast_global(directive)
+                await self._broadcast(directive)
             LOGGER.info("Game started players=%d", len(names))
 
     async def _end_game(self: "GameEngine", client_id: str, data: dict[str, object]) -> None:
@@ -304,6 +300,14 @@ class LobbyMixin:
         """Build the reconnect snapshot for an authenticated player."""
         return {
             "client_id": player.client_id,
+            "session_id": self.session_id,
+            "latest_event_id": self.journal.cursor,
+            "latest_round": self.latest_round,
+            "accepted_actions": [
+                value
+                for (owner, _), value in self.accepted_actions.items()
+                if owner == player.client_id
+            ],
             "reconnect_token": player.reconnect_token,
             "round_paused": self.round_paused,
             "name": player.name,

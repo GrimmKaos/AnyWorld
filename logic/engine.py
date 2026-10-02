@@ -5,6 +5,7 @@ import json
 import logging
 from collections import deque
 from collections.abc import Awaitable, Callable
+from uuid import uuid4
 
 from core.config import settings
 from core.schemas import RoundResolution, ServerEvent
@@ -21,6 +22,7 @@ from logic.models import (
     RoundActions,
 )
 from logic.transcript import GameTranscript
+from logic.journal import PublicJournal
 from logic.validation import clean_text
 
 LOGGER = logging.getLogger(__name__)
@@ -43,6 +45,7 @@ class GameEngine(LobbyMixin):
         "end_game": "_end_game",
         "action": "_submit_action",
         "retry_round": "_retry_round",
+        "journal_request": "_journal_page",
     }
 
     def __init__(self, sender: EventSender, resolver: ResolutionManager) -> None:
@@ -71,6 +74,26 @@ class GameEngine(LobbyMixin):
         self.current_scenario_state: str | None = None
         self.opening_scenario: str | None = None
         self.transcript = GameTranscript()
+        self.session_id = str(uuid4())
+        self.journal = PublicJournal(self.session_id)
+        self.latest_round: dict[str, object] | None = None
+        self.accepted_actions: dict[tuple[str, str], dict[str, object]] = {}
+
+    async def _broadcast(self, event: ServerEvent) -> None:
+        try:
+            event = await self.journal.record(event)
+        except OSError:
+            LOGGER.exception("Public journal write failed")
+        if event.type == "state_update" and event.payload.get("round_number"):
+            self.latest_round = dict(event.payload)
+        await self.sender.broadcast_global(event)
+
+    async def _journal_page(self, client_id: str, data: dict[str, object]) -> None:
+        from core.schemas import JournalInput
+
+        request = JournalInput.model_validate(data)
+        page = await self.journal.page(request.after, request.limit, request.search)
+        await self.sender.send_personal(client_id, ServerEvent(type="journal_page", payload=page))
 
     def _job_current(self, epoch: int) -> bool:
         """Return whether the job's epoch is current and the session has not ended."""
@@ -96,9 +119,7 @@ class GameEngine(LobbyMixin):
             async with self.effects_lock:
                 if not self._job_current(epoch):
                     return
-                await self.sender.broadcast_global(
-                    ServerEvent(type="dm_thinking", payload={"active": True})
-                )
+                await self._broadcast(ServerEvent(type="dm_thinking", payload={"active": True}))
             async with asyncio.timeout(settings.llm.request_timeout_seconds * 3):
                 for attempt in range(3):
                     try:
@@ -152,9 +173,9 @@ class GameEngine(LobbyMixin):
                     # Do not offer a retry for actions that have already resolved.
                     LOGGER.warning("Preserving committed state generation=%d", epoch)
                     if directive is not None:
-                        await self.sender.broadcast_global(directive)
+                        await self._broadcast(directive)
                     return
-                await self.sender.broadcast_global(
+                await self._broadcast(
                     ServerEvent(
                         type="error",
                         payload={
@@ -176,7 +197,7 @@ class GameEngine(LobbyMixin):
             try:
                 async with self.effects_lock:
                     if self._job_current(epoch):
-                        await self.sender.broadcast_global(
+                        await self._broadcast(
                             ServerEvent(type="dm_thinking", payload={"active": False})
                         )
                 if self._job_current(epoch):
@@ -212,7 +233,7 @@ class GameEngine(LobbyMixin):
             except OSError:
                 LOGGER.warning("Could not finalize game transcript")
             if not already_ended:
-                await self.sender.broadcast_global(
+                await self._broadcast(
                     ServerEvent(type="game_ended", payload={"msg": "The host ended the game."})
                 )
         if task is not None:
@@ -253,12 +274,12 @@ class GameEngine(LobbyMixin):
                     actions = self._take_complete_round_locked()
                     if actions is not None:
                         self._launch_round_locked(actions)
-            await self.sender.broadcast_global(
+            await self._broadcast(
                 ServerEvent(type="system_msg", payload={"msg": f"{player.name} disconnected."})
             )
-            await self.sender.broadcast_global(self._player_roster_event())
+            await self._broadcast(self._player_roster_event())
             if directive is not None:
-                await self.sender.broadcast_global(directive)
+                await self._broadcast(directive)
 
     def _action_allowed(self, client_id: str) -> None:
         """Raise if the client cannot submit an action in the current state."""
@@ -273,6 +294,22 @@ class GameEngine(LobbyMixin):
     async def _submit_action(self, client_id: str, data: dict[str, object]) -> None:
         """Validate and buffer a player action, launching a round when complete."""
         action = clean_text(data.get("action"), "action", 4_000)
+        action_id = data.get("action_id")
+        if action_id is not None:
+            if data.get("session_id") != self.session_id:
+                raise ValueError("This action belongs to another session.")
+            previous = self.accepted_actions.get((client_id, action_id))
+            if previous is not None:
+                if previous["action"] != action or previous["round_number"] != data.get(
+                    "round_number"
+                ):
+                    raise ValueError("An action ID cannot be reused for a different action.")
+                await self.sender.send_personal(
+                    client_id, ServerEvent(type="action_accepted", payload=previous)
+                )
+                return
+            if data.get("round_number") != self.round_counter + 1:
+                raise ValueError("This action belongs to another round.")
         async with self.lock:
             if not CURRENT_OWNER.get()():
                 return
@@ -296,6 +333,13 @@ class GameEngine(LobbyMixin):
                     raise ValueError("Party presence changed; please submit your action again.")
                 player = self.players[client_id]
                 self.round_buffer[client_id] = action
+                if action_id is not None:
+                    self.accepted_actions[(client_id, action_id)] = {
+                        "session_id": self.session_id,
+                        "action_id": action_id,
+                        "round_number": self.round_counter + 1,
+                        "action": action,
+                    }
                 action_event = ServerEvent(
                     type="action_echo",
                     payload={
@@ -303,6 +347,7 @@ class GameEngine(LobbyMixin):
                         "player_name": player.name,
                         "player_color_index": player.join_index,
                         "action": action,
+                        "action_id": action_id,
                     },
                 )
                 self.turn_queue.rotate(-1)
@@ -315,9 +360,17 @@ class GameEngine(LobbyMixin):
                 action_event.payload["round_number"],
                 action_event.payload["player_name"],
             )
-            await self.sender.broadcast_global(action_event)
+            await self._broadcast(action_event)
+            if action_id is not None:
+                await self.sender.send_personal(
+                    client_id,
+                    ServerEvent(
+                        type="action_accepted",
+                        payload=self.accepted_actions[(client_id, action_id)],
+                    ),
+                )
             if directive is not None:
-                await self.sender.broadcast_global(directive)
+                await self._broadcast(directive)
 
     def _next_turn_locked(self) -> ServerEvent | None:
         """Advance the turn queue and return a directive for the next active player."""
@@ -508,6 +561,11 @@ class GameEngine(LobbyMixin):
                 self.round_counter += 1
                 number = self.round_counter
                 self.resolver.commit_resolution(prepared)
+                self.accepted_actions = {
+                    key: value
+                    for key, value in self.accepted_actions.items()
+                    if value["round_number"] >= number - 1
+                }
                 for item, participant in participants.items():
                     player = self.players[item]
                     if player.connection_version == participant.connection_version:
@@ -521,6 +579,17 @@ class GameEngine(LobbyMixin):
                 self.pending_resolution = None
                 self.state = GameState.ACTIVE_TURN
                 directive = self._next_turn_locked()
+                self.latest_round = {
+                    **display.model_dump(),
+                    "round_number": number,
+                    "submitted_actions": {
+                        name: action
+                        for name, action in display_actions.items()
+                        if action != IDLE_ACTION
+                    },
+                    "player_order": [self.players[item].name for item in self.join_order],
+                    "dice_results": public_dice,
+                }
             try:
                 await self.transcript.append_round(
                     number,
@@ -564,12 +633,12 @@ class GameEngine(LobbyMixin):
                 player_order=[self.players[item].name for item in self.join_order],
                 dice_results=public_dice,
             )
-            await self.sender.broadcast_global(ServerEvent(type="state_update", payload=payload))
+            await self._broadcast(ServerEvent(type="state_update", payload=payload))
             if directive is not None:
-                await self.sender.broadcast_global(
+                await self._broadcast(
                     ServerEvent(type="round_start", payload={"round_number": number + 1})
                 )
-                await self.sender.broadcast_global(directive)
+                await self._broadcast(directive)
 
     def _round_debug_summary(
         self,
@@ -627,6 +696,11 @@ class GameEngine(LobbyMixin):
             "round_work_seconds",
         }
         public = {key: value for key, value in snapshot.items() if key not in private_keys}
+        for key in ("round", "game"):
+            if isinstance(public.get(key), dict):
+                public[key] = {
+                    name: value for name, value in public[key].items() if name != "latency_seconds"
+                }
         event = ServerEvent(type="token_usage", payload=public)
         if client_id is not None:
             player = self.players.get(client_id)
@@ -637,7 +711,7 @@ class GameEngine(LobbyMixin):
                 ),
             )
         else:
-            await self.sender.broadcast_global(event)
+            await self._broadcast(event)
             for player in self.players.values():
                 if player.is_host and player.is_connected:
                     await self.sender.send_personal(
