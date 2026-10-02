@@ -6,6 +6,7 @@ const clientSession = {
  scenarioSubmitting: false, lastStartedRound: 0, sessionId: null, cursor: 0,
  pendingAction: null, replaced: false, replaying: false, roundNumber: null,
  seenEvents: new Set(), renderedRounds: new Set(),
+ replaySnapshot: null, liveEvents: [], historyCursor: 0, exportEvents: [],
 };
 const elements = {
     grid: document.getElementById("grid-container"),
@@ -42,6 +43,14 @@ const elements = {
     endGameButton: document.getElementById("end-game-button"),
     retryRoundButton: document.getElementById("retry-round-button"),
     reclaimButton: document.getElementById("reclaim-button"),
+    historyButton: document.getElementById("history-button"),
+    historyModal: document.getElementById("history-modal"),
+    historyClose: document.getElementById("history-close"),
+    historySearch: document.getElementById("history-search"),
+    historyForm: document.getElementById("history-form"),
+    historyEntries: document.getElementById("history-entries"),
+    historyNext: document.getElementById("history-next"),
+    historyExport: document.getElementById("history-export"),
 };
 
 const renderedActions = new Set();

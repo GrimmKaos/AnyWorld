@@ -33,6 +33,7 @@
         <div id="token-details"></div>
       </details>
       <span id="player-identity" aria-label="Current player"></span>
+      <button id="history-button" type="button">History</button>
     </header>
     <section id="log-pane" data-pane-title="Game State" aria-label="Game state: scenario state and player actions"
       aria-live="polite">
@@ -102,6 +103,17 @@
     </div>
   </div>
 
+  <div id="history-modal" class="modal" role="dialog" aria-modal="true" aria-label="Public game history" hidden>
+    <div class="modal-card">
+      <button id="history-close" type="button">Close history</button>
+      <h2>Public game history</h2>
+      <form id="history-form"><input id="history-search" maxlength="200" aria-label="Search public history">
+        <button type="submit">Search from beginning</button></form>
+      <div id="history-entries"></div>
+      <button id="history-next" type="button">Next page</button>
+      <button id="history-export" type="button">Export public history</button>
+    </div>
+  </div>
   <div id="dm-thinking" hidden role="status">
     <span class="thinking-orb" aria-hidden="true"></span>
     The Dungeon Master is weaving the outcome…
@@ -114,6 +126,8 @@
   <script src="/static/js/identity.js?v=recovery-1"></script>
   <script src="/static/js/rendering.js?v=recovery-1"></script>
   <script src="/static/js/transport.js?v=recovery-1"></script>
+  <script src="/static/js/accessibility.js?v=recovery-1"></script>
+  <script src="/static/js/journal.js?v=recovery-1"></script>
   <script src="/static/js/app.js?v=recovery-1"></script>
 </body>
 

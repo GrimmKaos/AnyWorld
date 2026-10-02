@@ -1,12 +1,33 @@
 "use strict";
-function handleMessage(message) {
+function handleMessage(message, replayed = false) {
     // Snapshots rebuild the current view after reconnect; live events then update
     // only the affected bounded log, roster, status or input-control state.
     const { type, payload } = message;
     if (!clientSession.authenticated && type !== "auth_ok" && type !== "error") {
         return;
     }
+    if (type !== "auth_ok" && payload.session_id && payload.session_id !== clientSession.sessionId) return;
+    if (type === "journal_page") { handleJournalPage(payload); return; }
+    if (clientSession.replaying && !replayed &&
+        !["auth_ok", "error", "chat_echo", "token_usage", "action_accepted"].includes(type)) {
+        clientSession.liveEvents.push(message);
+        return;
+    }
+    if (Number.isInteger(payload.event_id)) {
+        if (payload.event_id <= clientSession.cursor) return;
+        clientSession.cursor = payload.event_id;
+    }
     if (type === "auth_ok") {
+        if (payload.session_id && payload.session_id !== clientSession.sessionId) {
+            clientSession.cursor = 0;
+            clientSession.renderedRounds.clear();
+            renderedActions.clear();
+            clientSession.lastStartedRound = 0;
+            const banner = document.getElementById("game-banner");
+            elements.log.replaceChildren(banner);
+        }
+        clientSession.replaying = Boolean(payload.session_id && payload.latest_event_id > clientSession.cursor);
+        clientSession.replaySnapshot = payload;
         clientSession.reconnectAttempts = 0;
         clientSession.replaced = false;
         elements.reclaimButton.hidden = true;
@@ -27,6 +48,7 @@ function handleMessage(message) {
         elements.grid.hidden = false;
         elements.loginError.textContent = "";
         applySnapshot(payload);
+        if (clientSession.replaying) requestJournal("replay", clientSession.cursor);
         const pending = clientSession.pendingAction;
         // Reuse the original ID only in its original session and round.
         if (pending && pending.session_id === clientSession.sessionId &&
@@ -53,29 +75,12 @@ function handleMessage(message) {
             payload.player_color_index,
         );
     } else if (type === "state_update") {
-        setThinking(false);
+        if (!replayed) setThinking(false);
         setPlayerOrder(payload.player_order);
         if (payload.scenario_title) {
             elements.title.textContent = displayGameTitle(payload.scenario_title);
         }
-        startRound(payload.round_number);
-        syncActions(payload.round_number, payload.submitted_actions);
-        appendState(payload.global_narrative, payload.round_number);
-        Object.entries(payload.dice_results || {}).forEach(([player, roll]) => {
-            appendText(
-                elements.log,
-                `🎲 ${player} rolled ${roll}/100`,
-                `dice-entry current-round${playerColorClass(player)}`,
-            );
-        });
-        Object.entries(payload.player_resolutions).forEach(([player, resolution]) => {
-            appendText(
-                elements.log,
-                `[${player}] ${resolution}`,
-                `resolution-entry current-round${playerColorClass(player)}`,
-            );
-        });
-        markRoundComplete();
+        renderResolution(payload);
     } else if (type === "player_roster") {
         renderPlayers(payload.players);
     } else if (type === "dm_thinking") {
@@ -128,9 +133,9 @@ function handleMessage(message) {
             `Round cache reads: ${formatTotal(round.cached_tokens)}`,
             `llama.cpp processed / reused: ${formatTotal(round.processed_prompt_tokens)} / ${formatTotal(round.reused_prompt_tokens)}`,
             `Requests: ${round.attempts || 0} · Errors: ${round.errors || 0} · Retries: ${round.retries || 0}`,
-            `Failed round attempts: ${payload.round_failures || 0}`,
-            `Request time: ${(round.latency_seconds || 0).toFixed(2)}s`,
-            `Round work time: ${(payload.round_work_seconds || 0).toFixed(2)}s (includes budgeting and retries)`,
+            ...(clientSession.isHost ? [`Failed round attempts: ${payload.round_failures || 0}`] : []),
+            ...(clientSession.isHost ? [`Request time: ${(round.latency_seconds || 0).toFixed(2)}s`] : []),
+            ...(clientSession.isHost ? [`Round work time: ${(payload.round_work_seconds || 0).toFixed(2)}s (includes budgeting and retries)`] : []),
             "Unknown means the provider did not report every counter; tokens are not a currency cost.",
         ].join("\n");
     } else if (type === "game_ended") {

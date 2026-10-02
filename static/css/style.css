@@ -509,3 +509,8 @@ button:disabled {
     overflow: hidden;
     clip-path: inset(50%);
 }
+
+#history-entries { max-height: 55vh; overflow: auto; }
+#history-entries pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.8rem; }
+#history-button { font-size: 0.75rem; padding: 0.2rem 0.5rem; }
+#reclaim-button { position: fixed; bottom: 2rem; right: 1rem; z-index: 10; }

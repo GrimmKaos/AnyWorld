@@ -66,6 +66,7 @@ class PublicJournal:
     def _page(self, after: int, limit: int, search: str) -> tuple[list[dict], int, bool]:
         events = []
         cursor = after
+        size = 0
         if not self.path.exists():
             return events, cursor, False
         with self.path.open(encoding="utf-8") as archive:
@@ -75,9 +76,12 @@ class PublicJournal:
                 if event_id <= after:
                     continue
                 matches = not search or search.casefold() in line.casefold()
-                if matches and len(events) == limit:
+                if matches and (
+                    len(events) == limit or (events and size + len(line.encode("utf-8")) > 524288)
+                ):
                     return events, cursor, True
                 cursor = event_id
                 if matches:
                     events.append(event)
+                    size += len(line.encode("utf-8"))
         return events, cursor, False

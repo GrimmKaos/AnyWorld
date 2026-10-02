@@ -163,6 +163,7 @@ class JournalInput(StrictModel):
     after: int = Field(default=0, ge=0)
     limit: int = Field(default=100, ge=1, le=100)
     search: str = Field(default="", max_length=200)
+    mode: Literal["replay", "history", "export"] = "history"
 
 
 def validate_client_data(payload: ClientPayload) -> None:

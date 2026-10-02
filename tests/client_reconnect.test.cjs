@@ -5,7 +5,7 @@ const { randomUUID, createHash } = require("node:crypto");
 const vm = require("node:vm");
 const path = require("node:path");
 
-const source = ["state", "identity", "rendering", "transport", "app"]
+const source = ["state", "identity", "rendering", "transport", "accessibility", "journal", "app"]
     .map((name) => readFileSync(path.join(__dirname, `../static/js/${name}.js`), "utf8"))
     .join("\n");
 
@@ -28,7 +28,8 @@ function browser(localStorage = storage(), sessionStorage = storage()) {
             addEventListener(type, callback) { this.listeners[type] = callback; },
             querySelector() { return node("button"); },
             querySelectorAll() { return []; },
-            append() {}, appendChild() {}, replaceChildren() {}, focus() {},
+            append() {}, appendChild() {}, replaceChildren() {}, focus() {}, after() {},
+            setAttribute() {}, getClientRects() { return [1]; }, contains() { return false; },
         });
         return nodes.get(id);
     }
@@ -63,7 +64,9 @@ function browser(localStorage = storage(), sessionStorage = storage()) {
     };
     const runtime = {
         window, sessionStorage, WebSocket: Socket, setTimeout, clearTimeout, console,
-        document: { getElementById: node, createElement: node },
+        MutationObserver: class { observe() {} },
+        document: { getElementById: node, createElement: node,
+            createDocumentFragment: () => node("fragment"), addEventListener() {} },
     };
     vm.runInNewContext(source, runtime);
     return {
@@ -149,6 +152,41 @@ test("draft survives a lost acknowledgment and only its scoped ID clears it", as
     assert.equal(next.sent.at(-1).data.action_id, sent.action_id);
     next.receive("action_accepted", sent);
     assert.equal(tab.node("action-input").value, "");
+});
+
+test("ordered replay renders missed outcomes and public dice once despite live duplicates", async () => {
+    const tab = await joined();
+    const shown = [];
+    tab.runtime.appendState = (text, round) => shown.push(["state", round, text]);
+    tab.runtime.appendText = (container, text) => { shown.push(["text", text]); return { dataset: {} }; };
+    const outcome = { session_id: "session-a", event_id: 2, round_number: 1,
+        global_narrative: "Gate opens", player_resolutions: { Arxs: "Entered" }, dice_results: { Arxs: 42 } };
+    tab.sockets[0].receive("auth_ok", { name: "Arxs", reconnect_token: "private-token",
+        state: "ACTIVE_TURN", session_id: "session-a", latest_event_id: 3, round_number: 2,
+        latest_round: outcome, players: [], player_order: [] });
+    assert.equal(tab.sockets[0].sent.at(-1).event_type, "journal_request");
+    const next = { ...outcome, event_id: 4, round_number: 2, global_narrative: "Entered courtyard" };
+    tab.sockets[0].receive("state_update", next);
+    tab.sockets[0].receive("journal_page", { session_id: "session-a", mode: "replay", cursor: 3,
+        has_more: false, events: [{ type: "state_update", payload: outcome }] });
+    tab.sockets[0].receive("state_update", next);
+    tab.sockets[0].receive("state_update", outcome);
+    assert.deepEqual(shown.filter((entry) => entry[0] === "state").map((entry) => entry[1]), [1, 2]);
+    assert.equal(shown.filter((entry) => entry[1] === "🎲 Arxs rolled 42/100").length, 2);
+});
+
+test("incoming chat preserves action focus and does not pull a reader to the bottom", async () => {
+    const tab = await joined();
+    let focused = 0;
+    tab.node("action-input").focus = () => { focused += 1; };
+    tab.runtime.applyTurn(tab.sockets[0].url.split("/").at(-1), "Arxs");
+    const chat = tab.node("chat-messages");
+    chat.scrollHeight = 1000;
+    chat.scrollTop = 10;
+    chat.clientHeight = 100;
+    tab.sockets[0].receive("chat_echo", { name: "Other", chat: "Hello" });
+    assert.equal(focused, 1);
+    assert.equal(chat.scrollTop, 10);
 });
 
 test("a reopened tab recovers its identity after name and password entry", async () => {

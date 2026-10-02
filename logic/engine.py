@@ -93,6 +93,8 @@ class GameEngine(LobbyMixin):
 
         request = JournalInput.model_validate(data)
         page = await self.journal.page(request.after, request.limit, request.search)
+        page["mode"] = request.mode
+        page["search"] = request.search
         await self.sender.send_personal(client_id, ServerEvent(type="journal_page", payload=page))
 
     def _job_current(self, epoch: int) -> bool:
