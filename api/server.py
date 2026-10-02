@@ -245,6 +245,10 @@ def create_app(resolver_factory=LLMContextManager) -> FastAPI:
                             raw_payload = await receive_payload(websocket)
                     else:
                         raw_payload = await receive_payload(websocket)
+                        if not manager.owns(client_id, websocket):
+                            break
+                        if not websocket.app.state.player_messages.accept(client_id):
+                            raise ValueError("Message rate exceeded; please wait.")
                     payload = ClientPayload.model_validate(raw_payload)
                     validate_client_data(payload)
                     if not authenticated:
@@ -267,8 +271,6 @@ def create_app(resolver_factory=LLMContextManager) -> FastAPI:
                     elif payload.event_type == "auth":
                         raise ValueError("This socket is already authenticated.")
                     else:
-                        if not websocket.app.state.player_messages.accept(client_id):
-                            raise ValueError("Message rate exceeded; please wait.")
                         await engine.process_payload(
                             client_id,
                             payload,

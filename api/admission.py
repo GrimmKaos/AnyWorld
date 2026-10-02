@@ -71,8 +71,13 @@ def origin_allowed(socket: WebSocket) -> bool:
     origin = socket.headers.get("origin")
     if origin is None:
         return settings.server.allow_missing_origin
-    parsed = urlsplit(origin)
+    try:
+        parsed = urlsplit(origin)
+    except ValueError:
+        return False
     if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.path not in {"", "/"}:
+        return False
+    if parsed.query or parsed.fragment or parsed.username or parsed.password:
         return False
     expected = (
         ("https" if socket.url.scheme == "wss" else "http") + "://" + socket.headers.get("host", "")
@@ -108,4 +113,21 @@ async def receive_payload(socket: WebSocket):
                 raise ValueError("Message nesting exceeds the configured limit.")
         elif char in "]}":
             depth -= 1
-    return json.loads(text)
+    payload = json.loads(text)
+
+    def valid_unicode(value):
+        if isinstance(value, str):
+            try:
+                value.encode("utf-8")
+            except UnicodeEncodeError as exc:
+                raise ValueError("Message contains invalid Unicode.") from exc
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                valid_unicode(key)
+                valid_unicode(item)
+        elif isinstance(value, list):
+            for item in value:
+                valid_unicode(item)
+
+    valid_unicode(payload)
+    return payload

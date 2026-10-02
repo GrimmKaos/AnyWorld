@@ -19,7 +19,7 @@ from test_priority_one_transport import authenticate
 def test_origin_policy_requires_explicit_missing_origin_setting():
     settings.server.allow_missing_origin = False
     with TestClient(create_app(FakeResolver)) as client:
-        for headers in ({}, {"origin": "https://evil.test"}):
+        for headers in ({}, {"origin": "https://evil.test"}, {"origin": "https://[invalid"}):
             with pytest.raises(WebSocketDisconnect):
                 with client.websocket_connect(f"/ws/{uuid4()}", headers=headers):
                     pass
@@ -50,6 +50,13 @@ def test_large_and_deep_messages_are_rejected_before_domain_processing():
         with client.websocket_connect(f"/ws/{uuid4()}") as socket:
             socket.send_text("[" * 9 + "0" + "]" * 9)
             assert "nesting" in socket.receive_json()["payload"]["msg"]
+
+
+def test_escaped_unpaired_unicode_is_rejected_cleanly():
+    with TestClient(create_app(FakeResolver)) as client:
+        with client.websocket_connect(f"/ws/{uuid4()}") as socket:
+            socket.send_text('{"event_type":"auth","data":{"name":"\\ud800"}}')
+            assert "invalid Unicode" in socket.receive_json()["payload"]["msg"]
 
 
 def test_stalled_writer_does_not_delay_healthy_socket():
