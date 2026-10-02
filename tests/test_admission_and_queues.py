@@ -83,6 +83,7 @@ def test_stalled_writer_does_not_delay_healthy_socket():
         assert "slow" not in manager.active_connections
         assert manager.owns("fast", fast)
         await manager.close()
+        assert not manager._writers and not manager._retired_writers
 
     asyncio.run(run())
 

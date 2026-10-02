@@ -33,6 +33,7 @@ class ConnectionManager:
         self._bytes: dict[WebSocket, int] = {}
         self._ids: dict[WebSocket, str] = {}
         self._cleanup_tasks: set[asyncio.Task] = set()
+        self._retired_writers: set[asyncio.Task] = set()
         self.on_disconnect = None
 
     async def connect(self, client_id: str, websocket: WebSocket) -> bool:
@@ -71,8 +72,11 @@ class ConnectionManager:
         self._queues.pop(websocket, None)
         self._bytes.pop(websocket, None)
         writer = self._writers.pop(websocket, None)
-        if writer is not None and writer is not asyncio.current_task():
-            writer.cancel()
+        if writer is not None:
+            self._retired_writers.add(writer)
+            writer.add_done_callback(self._retired_writers.discard)
+            if writer is not asyncio.current_task():
+                writer.cancel()
         return removed
 
     async def disconnect(self, client_id: str, websocket: WebSocket) -> bool:
@@ -149,7 +153,7 @@ class ConnectionManager:
 
     async def close(self) -> None:
         sockets = set(self._queues)
-        writers = list(self._writers.values())
+        writers = [*self._writers.values(), *self._retired_writers]
         for socket in sockets:
             self._forget(socket)
         if writers:
