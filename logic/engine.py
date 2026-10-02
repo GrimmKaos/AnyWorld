@@ -183,19 +183,32 @@ class GameEngine(LobbyMixin):
                         type="error",
                         payload={
                             "msg": (
-                                connection_hint
-                                + (
-                                    "Round paused; actions and dice are retained. "
-                                    "The host can retry or end."
-                                    if self.round_paused
-                                    else "Could not prepare the game. Please try again."
-                                )
+                                "Round paused; actions and dice are retained. "
+                                "The host can retry or end."
+                                if self.round_paused
+                                else "Could not prepare the game. Please try again."
                             ),
                             "round_paused": self.round_paused,
                             "state": self.state.name,
                         },
                     )
                 )
+                for player in self.players.values():
+                    if player.is_host and player.is_connected:
+                        await self.sender.send_personal(
+                            player.client_id,
+                            ServerEvent(
+                                type="error",
+                                payload={
+                                    "msg": connection_hint
+                                    + "Inference could not complete; see host diagnosis.",
+                                    "diagnosis": str(exc)[:1000],
+                                    "phase": failure_state.name,
+                                    "round_paused": self.round_paused,
+                                    "state": self.state.name,
+                                },
+                            ),
+                        )
         finally:
             try:
                 async with self.effects_lock:

@@ -156,7 +156,8 @@ function handleMessage(message, replayed = false) {
         elements.lobbyStep.hidden = false;
         elements.scenarioForm.querySelector("button").disabled = false;
     } else if (type === "error") {
-        const message = payload.msg || "Unknown server error.";
+        const message = (payload.msg || "Unknown server error.") +
+            (clientSession.isHost && payload.diagnosis ? "\n" + payload.diagnosis : "");
         if (clientSession.scenarioSubmitting) {
             clientSession.scenarioSubmitting = false;
             showScenarioError(message);

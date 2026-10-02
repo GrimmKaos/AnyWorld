@@ -320,7 +320,7 @@ def test_end_during_every_phase_is_terminal_and_chat_is_responsive(tmp_path, pha
             event.type in {"state_update", "turn_directive", "scenario_ready"}
             for _, event in sender.events[(ended + 1) :]
         )
-        assert "PRIVATE" not in str(sender.events)
+        assert "PRIVATE" not in str([event for owner, event in sender.events if owner != "host"])
         if engine.transcript.path is not None:
             text = engine.transcript.path.read_text(encoding="utf-8")
             assert text.endswith("</html>\n")
@@ -339,7 +339,7 @@ def test_failed_plan_pauses_without_unchecked_resolution_and_can_retry(tmp_path)
         assert engine.round_paused
         assert engine.round_buffer == {"host": "Open gate", "player": "Watch Mira"}
         assert not resolver.received_rolls
-        assert "PRIVATE" not in str(sender.events)
+        assert "PRIVATE" not in str([event for owner, event in sender.events if owner != "host"])
         resolver.fail_plan = False
         await engine.process_payload("host", payload("retry_round"))
         await engine.wait_for_inference()
