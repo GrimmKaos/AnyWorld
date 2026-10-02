@@ -88,3 +88,22 @@ def test_failed_staging_preserves_conversation():
         assert manager._known_player_names == []
 
     asyncio.run(run())
+
+
+def test_rejected_memory_commit_cannot_advance_the_engine_round(tmp_path, monkeypatch):
+    async def run():
+        engine, _, resolver = await build_started_game(tmp_path)
+
+        def reject(prepared):
+            raise RuntimeError("Stale checkpoint")
+
+        monkeypatch.setattr(resolver, "commit_resolution", reject)
+        await engine.process_payload("host", payload("action", action="Wait"))
+        await engine.process_payload("player", payload("action", action="Walk"))
+        await engine.wait_for_inference()
+        assert engine.round_counter == 0
+        assert engine.round_paused
+        assert engine.current_scenario_state == engine.opening_scenario
+        await engine.shutdown()
+
+    asyncio.run(run())

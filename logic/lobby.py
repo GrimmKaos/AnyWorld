@@ -264,8 +264,8 @@ class LobbyMixin:
             async with self.lock:
                 if not self._job_current(epoch):
                     return
-                self.current_scenario_state = resolution.global_narrative
                 self.resolver.commit_resolution(prepared)
+                self.current_scenario_state = resolution.global_narrative
                 self.opening_scenario = resolution.global_narrative
                 # The opening establishes in-world presence. Earlier transport
                 # reconnects are not departures or returns within the story.

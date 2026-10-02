@@ -578,9 +578,9 @@ class GameEngine(LobbyMixin):
             async with self.lock:
                 if not self._job_current(epoch):
                     return
+                self.resolver.commit_resolution(prepared)
                 self.round_counter += 1
                 number = self.round_counter
-                self.resolver.commit_resolution(prepared)
                 self.accepted_actions = {
                     key: value
                     for key, value in self.accepted_actions.items()
