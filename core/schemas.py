@@ -2,13 +2,14 @@
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 
 class StrictModel(BaseModel):
     """Base model that forbids coercion and unknown fields."""
 
     model_config = ConfigDict(strict=True, extra="forbid")
+    _provider_response_text: str | None = PrivateAttr(default=None)
 
 
 class ClientPayload(StrictModel):
@@ -102,14 +103,14 @@ class ContextSummary(StrictModel):
 class RoundResolution(StrictModel):
     """Structured outcome of a resolved round."""
 
-    global_narrative: str
     player_resolutions: dict[str, str]
+    global_narrative: str
 
 
 class ScenarioTitle(StrictModel):
     """Title-only preparation before the party has joined."""
 
-    title: str
+    title: str = Field(min_length=1, max_length=80)
 
 
 class SummaryAudit(StrictModel):

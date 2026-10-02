@@ -27,13 +27,8 @@ class GameTranscript:
         self, title: str, initial_state: str, opening_scenario: str = "", private_guidance: str = ""
     ) -> None:
         """Archive the host scenario and private guidance before the opening state."""
-        safe_title = re.sub(r"[^\w\s-]", "", title).strip().replace(" ", "_")
+        safe_title = re.sub(r"[^\w\s-]", "", title).strip().replace(" ", "_")[:80]
         stem = f"{datetime.now():%Y-%m-%d}-{safe_title or 'session'}"
-        self.path = self.log_dir / f"{stem}.html"
-        suffix = 2
-        while self.path.exists():
-            self.path = self.log_dir / f"{stem}-{suffix}.html"
-            suffix += 1
         scenario_html = (
             f'<h2>Original scenario prompt</h2>\n<p class="state">{escape(opening_scenario)}</p>\n'
             if opening_scenario
@@ -75,8 +70,34 @@ dt.player-color-6{{color:#a5d6ff}}dt.player-color-7{{color:#ff9bce}}
 {scenario_html}{guidance_html}<h2>Opening scenario</h2>
 <p class="state">{escape(initial_state)}</p></header><main>
 """
-        await self._write(document)
+        async with self._io_lock:
+            if self.path is not None or self._finalized:
+                raise RuntimeError("Transcript has already been started or finalized")
+            work = asyncio.create_task(asyncio.to_thread(self._create, stem, document))
+            try:
+                self.path = await asyncio.shield(work)
+            except asyncio.CancelledError:
+                self.path = await work
+                raise
         LOGGER.info("Transcript started")
+
+    def _create(self, stem: str, document: str) -> Path:
+        """Reserve and initialize one archive without racing other sessions."""
+        suffix = 1
+        while True:
+            path = self.log_dir / f"{stem}{'' if suffix == 1 else '-' + str(suffix)}.html"
+            try:
+                stream = path.open("x", encoding="utf-8")
+            except FileExistsError:
+                suffix += 1
+                continue
+            try:
+                with stream:
+                    stream.write(document)
+            except BaseException:
+                path.unlink(missing_ok=True)
+                raise
+            return path
 
     async def append_round(
         self,
