@@ -7,12 +7,19 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 
 from core.config import settings
-from core.schemas import ServerEvent
+from core.schemas import RoundResolution, ServerEvent
 from logic.dice import roll_chance, roll_d100, validate_chance_events
 from logic.llm.errors import LLMBackendUnavailableError, LLMResolutionError
 from logic.lobby import CURRENT_OWNER, LobbyMixin
-from logic.models import EventSender, GameState, Player, ResolutionManager
-from logic.presentation import name_resolution
+from logic.models import (
+    EventSender,
+    GameState,
+    Player,
+    ResolutionManager,
+    Participant,
+    PendingRound,
+    RoundActions,
+)
 from logic.transcript import GameTranscript
 from logic.validation import clean_text
 
@@ -56,7 +63,7 @@ class GameEngine(LobbyMixin):
         self.round_paused = False
         # A paused round keeps its original actions and authoritative dice/events so
         # a host retry can rerun narrative validation without rerolling anything.
-        self.pending_resolution: dict | None = None
+        self.pending_resolution: PendingRound | None = None
         self.round_counter = 0
         self.scenario_title: str | None = None
         self.original_scenario: str | None = None
@@ -211,9 +218,7 @@ class GameEngine(LobbyMixin):
         if task is not None:
             await asyncio.gather(task, return_exceptions=True)
         if close_resolver:
-            close = getattr(self.resolver, "close", None)
-            if close is not None:
-                await close()
+            await self.resolver.close()
 
     async def handle_disconnect(
         self,
@@ -275,22 +280,20 @@ class GameEngine(LobbyMixin):
             epoch = self.generation
             candidate = dict(self.round_buffer)
             candidate[client_id] = action
-            named = {
-                self.players[item].name: candidate.get(item, IDLE_ACTION)
-                for item in self.join_order
-            }
+            participants = self._participants_locked()
+            named = self._round_actions(candidate, participants)
             current_state = self.current_scenario_state or ""
-        preflight = getattr(self.resolver, "preflight_round", None)
-        if preflight is not None:
-            try:
-                await preflight(named, current_state)
-            except LLMResolutionError as exc:
-                raise ValueError(str(exc)) from exc
+        try:
+            await self.resolver.preflight_round(named, current_state)
+        except LLMResolutionError as exc:
+            raise ValueError(str(exc)) from exc
         async with self.effects_lock:
             async with self.lock:
                 if not CURRENT_OWNER.get()() or epoch != self.generation:
                     return
                 self._action_allowed(client_id)
+                if participants != self._participants_locked():
+                    raise ValueError("Party presence changed; please submit your action again.")
                 player = self.players[client_id]
                 self.round_buffer[client_id] = action
                 action_event = ServerEvent(
@@ -362,29 +365,28 @@ class GameEngine(LobbyMixin):
         self.state = GameState.AWAITING_LLM
         return dict(self.round_buffer)
 
+    def _participants_locked(self) -> dict[str, Participant]:
+        return {
+            item: Participant(p.name, p.departure_pending, p.return_pending, p.connection_version)
+            for item in self.join_order
+            if (p := self.players[item]).is_connected or p.departure_pending or p.return_pending
+        }
+
+    @staticmethod
+    def _round_actions(
+        actions: dict[str, str], participants: dict[str, Participant]
+    ) -> RoundActions:
+        return RoundActions(
+            {p.name: actions.get(item, IDLE_ACTION) for item, p in participants.items()},
+            {p.name: p for p in participants.values()},
+        )
+
     def _launch_round_locked(self, actions: dict[str, str], *, retry: bool = False) -> None:
         """Prepare and launch a round resolution job from buffered actions."""
         if not retry:
-            participants = {
-                item: (
-                    self.players[item].name,
-                    self.players[item].departure_pending,
-                    self.players[item].return_pending,
-                    self.players[item].connection_version,
-                )
-                for item in actions
-                if self.players[item].is_connected
-                or self.players[item].departure_pending
-                or self.players[item].return_pending
-            }
-            self.pending_resolution = {
-                "actions": actions,
-                "participants": participants,
-                "dice": None,
-                "hidden": set(),
-                "chance_events": [],
-                "previous_state": self.current_scenario_state or "",
-            }
+            self.pending_resolution = PendingRound(
+                dict(actions), self._participants_locked(), self.current_scenario_state or ""
+            )
         self._launch_job_locked(self._resolve_round, GameState.AWAITING_LLM)
 
     async def _retry_round(self, client_id: str, data: dict[str, object]) -> None:
@@ -426,9 +428,7 @@ class GameEngine(LobbyMixin):
 
     async def _resolve_round(self, epoch: int) -> None:
         """Measure all round work, including failed host attempts."""
-        begin_usage = getattr(self.resolver, "begin_round_usage", None)
-        if begin_usage is not None:
-            begin_usage(self.round_counter + 1)
+        self.resolver.begin_round_usage(self.round_counter + 1)
         error = None
         try:
             await self._resolve_round_work(epoch)
@@ -436,9 +436,7 @@ class GameEngine(LobbyMixin):
             error = type(exc).__name__
             raise
         finally:
-            finish_usage = getattr(self.resolver, "finish_round_usage", None)
-            if finish_usage is not None:
-                finish_usage(error)
+            self.resolver.finish_round_usage(error)
 
     async def _resolve_round_work(self, epoch: int) -> None:
         """Plan authoritative checks, resolve all actions, and commit one round.
@@ -449,39 +447,23 @@ class GameEngine(LobbyMixin):
         """
         pending = self.pending_resolution
         assert pending is not None
-        actions = pending["actions"]
-        participants = pending["participants"]
-        llm_actions = {}
-        for item, (name, departed, returned, _) in participants.items():
-            notes = []
-            if departed:
-                notes.append("[SYSTEM: Explain this player's in-world departure or inaction.]")
-            if returned:
-                notes.append("[SYSTEM: Explain this player's in-world return.]")
-            llm_actions[name] = " ".join([*notes, actions[item]])
-        plan_dice = getattr(self.resolver, "plan_dice", None)
-        reused_dice = pending["dice"] is not None
-        if pending["dice"] is None:
-            pending["dice"] = {}
-            if plan_dice is not None:
-                # No fallback to unchecked resolution: a failed plan pauses the round.
-                pending["dice"] = None
-                plan = await plan_dice(llm_actions, pending["previous_state"])
-                if set(plan.rolls) != set(llm_actions) or not set(plan.hidden_rolls) <= {
-                    name for name, required in plan.rolls.items() if required
-                }:
-                    raise LLMResolutionError("Invalid dice plan participants.")
-                try:
-                    chance_events = validate_chance_events(
-                        plan.chance_events, self.private_guidance
-                    )
-                except ValueError as exc:
-                    raise LLMResolutionError(str(exc)) from exc
-                pending["hidden"] = set(plan.hidden_rolls)
-                pending["chance_events"] = [roll_chance(event) for event in chance_events]
-                pending["dice"] = {
-                    name: roll_d100() for name, required in plan.rolls.items() if required
-                }
+        actions = pending.actions
+        participants = pending.participants
+        llm_actions = self._round_actions(actions, participants)
+        reused_dice = pending.dice is not None
+        if pending.dice is None:
+            plan = await self.resolver.plan_dice(llm_actions, pending.previous_state)
+            if set(plan.rolls) != set(llm_actions) or not set(plan.hidden_rolls) <= {
+                name for name, required in plan.rolls.items() if required
+            }:
+                raise LLMResolutionError("Invalid dice plan participants.")
+            try:
+                chance_events = validate_chance_events(plan.chance_events, self.private_guidance)
+            except ValueError as exc:
+                raise LLMResolutionError(str(exc)) from exc
+            pending.hidden = set(plan.hidden_rolls)
+            pending.chance_events = [roll_chance(event) for event in chance_events]
+            pending.dice = {name: roll_d100() for name, required in plan.rolls.items() if required}
         if self.private_guidance:
             LOGGER.info(
                 "Private guidance checks round=%d generation=%d reused=%s rolls=%s",
@@ -489,27 +471,25 @@ class GameEngine(LobbyMixin):
                 epoch,
                 reused_dice,
                 json.dumps(
-                    {name: pending["dice"][name] for name in sorted(pending["hidden"])},
+                    {name: pending.dice[name] for name in sorted(pending.hidden)},
                     ensure_ascii=True,
                 ),
             )
-        if pending["chance_events"]:
+        if pending.chance_events:
             LOGGER.info(
                 "Private chance events round=%d generation=%d reused=%s results=%s",
                 self.round_counter + 1,
                 epoch,
                 reused_dice,
-                json.dumps([result.model_dump() for result in pending["chance_events"]]),
+                json.dumps([result.model_dump() for result in pending.chance_events]),
             )
-        if plan_dice is None:
-            resolution = await self.resolver.generate_resolution(llm_actions)
-        else:
-            resolution = await self.resolver.generate_resolution(
-                llm_actions,
-                pending["dice"],
-                hidden_rolls=pending["hidden"],
-                **({"chance_events": pending["chance_events"]} if pending["chance_events"] else {}),
-            )
+        prepared = await self.resolver.stage_resolution(
+            llm_actions,
+            pending.dice,
+            pending.hidden,
+            **({"chance_events": pending.chance_events} if pending.chance_events else {}),
+        )
+        resolution = prepared.result
         if (
             set(resolution.player_resolutions) != set(llm_actions)
             or not resolution.global_narrative.strip()
@@ -517,28 +497,23 @@ class GameEngine(LobbyMixin):
         ):
             raise LLMResolutionError("Invalid resolution participants or empty narrative.")
         public_dice = {
-            name: value for name, value in pending["dice"].items() if name not in pending["hidden"]
+            name: value for name, value in pending.dice.items() if name not in pending.hidden
         }
-        display_actions = {name: actions[item] for item, (name, _, _, _) in participants.items()}
-        outcomes = {}
-        for item, (name, _, _, _) in participants.items():
-            result = resolution.player_resolutions.get(
-                name, resolution.player_resolutions.get(item, "No resolution was provided.")
-            )
-            outcomes[name] = name_resolution(name, result)
-        display = resolution.model_copy(update={"player_resolutions": outcomes})
+        display_actions = {p.name: actions[item] for item, p in participants.items()}
+        display = resolution
         async with self.effects_lock:
             async with self.lock:
                 if not self._job_current(epoch):
                     return
                 self.round_counter += 1
                 number = self.round_counter
-                for item, (_, departed, returned, version) in participants.items():
+                self.resolver.commit_resolution(prepared)
+                for item, participant in participants.items():
                     player = self.players[item]
-                    if player.connection_version == version:
-                        if departed:
+                    if player.connection_version == participant.connection_version:
+                        if participant.departed:
                             player.departure_pending = False
-                        if returned:
+                        if participant.returned:
                             player.return_pending = False
                 self.current_scenario_state = resolution.global_narrative
                 self.round_buffer.clear()
@@ -558,13 +533,26 @@ class GameEngine(LobbyMixin):
                     },
                     hidden_dice_results={
                         name: value
-                        for name, value in pending["dice"].items()
-                        if name in pending["hidden"]
+                        for name, value in pending.dice.items()
+                        if name in pending.hidden
                     },
-                    chance_events=pending["chance_events"],
+                    chance_events=pending.chance_events,
                 )
-            except OSError:
+            except (OSError, RuntimeError):
                 LOGGER.warning("Could not append round %s to transcript", number)
+            await self.resolver.complete_round_debug(
+                number,
+                self._round_debug_summary(
+                    number,
+                    actions,
+                    participants,
+                    llm_actions,
+                    pending,
+                    resolution,
+                    display,
+                    display_actions,
+                ),
+            )
             payload = display.model_dump()
             payload.update(
                 round_number=number,
@@ -583,36 +571,78 @@ class GameEngine(LobbyMixin):
                 )
                 await self.sender.broadcast_global(directive)
 
+    def _round_debug_summary(
+        self,
+        number: int,
+        actions: dict[str, str],
+        participants: dict[str, Participant],
+        llm_actions: dict[str, str],
+        pending: PendingRound,
+        resolution: RoundResolution,
+        display: RoundResolution,
+        display_actions: dict[str, str],
+    ) -> dict[str, object]:
+        """Capture engine-owned private state for the local full-round archive."""
+        participant_summary = {}
+        for participant in participants.values():
+            participant_summary[participant.name] = {
+                "departed": participant.departed,
+                "returned": participant.returned,
+                "connection_version": participant.connection_version,
+            }
+        dice = pending.dice or {}
+        hidden = pending.hidden
+        return {
+            "round_number": number,
+            "private_guidance": self.private_guidance,
+            "actions_by_client": actions,
+            "actions_sent_to_resolver": llm_actions,
+            "actions_displayed_to_players": display_actions,
+            "participants": participant_summary,
+            "previous_scenario_state": pending.previous_state,
+            "authoritative_dice": dice,
+            "hidden_dice": {name: value for name, value in dice.items() if name in hidden},
+            "chance_events": [event.model_dump() for event in pending.chance_events],
+            "raw_resolution": resolution.model_dump(),
+            "published_resolution": display.model_dump(),
+            "scenario_state_after_round": self.current_scenario_state,
+        }
+
     async def _refresh_usage(self) -> None:
         """Bound optional measurement outside state/effects locks and job deadlines."""
-        refresh = getattr(self.resolver, "refresh_usage", None)
-        if refresh is not None:
-            try:
-                async with asyncio.timeout(USAGE_REFRESH_TIMEOUT_SECONDS):
-                    await refresh()
-            except Exception as exc:
-                # The resolver snapshot labels stale measurements as local estimates.
-                LOGGER.warning("Usage refresh unavailable error=%s", type(exc).__name__)
+        try:
+            async with asyncio.timeout(USAGE_REFRESH_TIMEOUT_SECONDS):
+                await self.resolver.refresh_usage()
+        except Exception as exc:
+            LOGGER.warning("Usage refresh unavailable error=%s", type(exc).__name__)
 
     async def _publish_usage(self, client_id: str | None = None) -> None:
-        """Publish the current snapshot without doing backend I/O."""
-        tokens = getattr(self.resolver, "last_token_usage", None)
-        if tokens is None:
-            return
-        snapshot = getattr(self.resolver, "usage_snapshot", None)
-        event = ServerEvent(
-            type="token_usage",
-            payload={
-                "approximate_tokens": tokens,
-                "context_window_size": getattr(self.resolver, "context_window_size", 8_192),
-                "counting_method": getattr(self.resolver, "token_count_method", "estimate"),
-                **(snapshot() if snapshot is not None else {}),
-            },
-        )
-        if client_id is None:
-            await self.sender.broadcast_global(event)
+        """Project private diagnostics separately from public aggregate usage."""
+        snapshot = self.resolver.usage_snapshot()
+        private_keys = {
+            "round_by_kind",
+            "last_request",
+            "round_failures",
+            "last_round_error",
+            "round_work_seconds",
+        }
+        public = {key: value for key, value in snapshot.items() if key not in private_keys}
+        event = ServerEvent(type="token_usage", payload=public)
+        if client_id is not None:
+            player = self.players.get(client_id)
+            await self.sender.send_personal(
+                client_id,
+                ServerEvent(
+                    type="token_usage", payload=snapshot if player and player.is_host else public
+                ),
+            )
         else:
-            await self.sender.send_personal(client_id, event)
+            await self.sender.broadcast_global(event)
+            for player in self.players.values():
+                if player.is_host and player.is_connected:
+                    await self.sender.send_personal(
+                        player.client_id, ServerEvent(type="token_usage", payload=snapshot)
+                    )
 
     async def _send_error(self, client_id: str, message: str) -> None:
         """Send a personal error event to a client."""

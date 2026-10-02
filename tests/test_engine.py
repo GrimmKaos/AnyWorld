@@ -7,69 +7,12 @@ from pathlib import Path
 import pytest
 
 from core.config import settings
-from core.schemas import ClientPayload, DicePlan, RoundResolution, ServerEvent
+from core.schemas import ClientPayload, DicePlan, RoundResolution
 from logic.engine import GameEngine, GameState, IDLE_ACTION
 from logic.transcript import GameTranscript
 
 
-class FakeSender:
-    """In-memory event sender that records sent events."""
-
-    def __init__(self) -> None:
-        """Initialize the event recorder."""
-        self.events: list[tuple[str | None, ServerEvent]] = []
-
-    async def broadcast_global(self, event: ServerEvent) -> None:
-        """Record a global event."""
-        self.events.append((None, event))
-
-    async def send_personal(self, client_id: str, event: ServerEvent) -> None:
-        """Record a personal event."""
-        self.events.append((client_id, event))
-
-    async def broadcast_except(self, client_id: str, event: ServerEvent) -> None:
-        """Record a broadcast-except event."""
-        self.events.append((f"except:{client_id}", event))
-
-    def events_of_type(self, event_type: str) -> list[ServerEvent]:
-        """Return recorded events of a given type."""
-        return [event for _, event in self.events if event.type == event_type]
-
-
-class FakeResolver:
-    """Deterministic resolution backend for tests."""
-
-    def __init__(self) -> None:
-        """Initialize the fake resolver state."""
-        self.scenario = ""
-        self.rounds = 0
-        self.start_names = []
-
-    def set_genesis(self, scenario: str, guidance: str = "") -> None:
-        """Record the scenario."""
-        self.scenario = scenario
-
-    async def generate_scenario_title(self) -> str:
-        """Return only a fixed title."""
-        return "The Test Quest"
-
-    async def generate_start_state(self, player_names: list[str]) -> RoundResolution:
-        """Return a fixed start state."""
-        self.start_names.append(list(player_names))
-        return RoundResolution(
-            global_narrative=f"{', '.join(player_names)} stand at a gate.",
-            player_resolutions={},
-        )
-
-    async def generate_resolution(self, round_buffer: dict[str, str]) -> RoundResolution:
-        """Return a fixed resolution for the given actions."""
-        self.rounds += 1
-        return RoundResolution(
-            global_narrative=f"State after round {self.rounds}.",
-            player_resolutions={
-                name: f"Resolved: {action}" for name, action in round_buffer.items()
-            },
-        )
+from support import FakeSender, FakeResolver
 
 
 def password_digest(password: str, client_id: str) -> str:
@@ -284,7 +227,7 @@ def test_active_disconnect_injects_idle_and_advances(tmp_path: Path) -> None:
         assert engine.active_player_id == "host"
         state_event = sender.events_of_type("state_update")[-1]
         player_result = state_event.payload["player_resolutions"]["Player"]
-        assert "Resolved: [SYSTEM: Explain this player's in-world departure" in player_result
+        assert "Resolved:" in player_result
         assert player_result.endswith(IDLE_ACTION)
         assert sender.events_of_type("system_msg")[-1].payload["msg"] == ("Player disconnected.")
 

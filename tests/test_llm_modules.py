@@ -10,7 +10,7 @@ from core.schemas import AuditVerdict, ChanceEvent, ChanceEventResult, DicePlan,
 from logic.llm.auditing import classify_hidden_checks
 from logic.llm.errors import LLMResolutionError
 from logic.llm import prompts
-from logic.llm_manager import LLMContextManager
+from logic.llm_manager import LLMContextManager, participant_schema
 from test_priority_one_llm import FakeClient
 
 
@@ -71,7 +71,22 @@ def test_connection_annotations_explain_server_lifecycle():
 
 def test_round_resolution_has_no_unused_title_field():
     """Round output contains only the narrative and participant outcomes."""
-    assert set(RoundResolution.model_fields) == {"global_narrative", "player_resolutions"}
+    assert list(RoundResolution.model_fields) == ["player_resolutions", "global_narrative"]
+
+
+def test_round_resolution_generates_player_outcomes_before_shared_narrative():
+    """The shared narrative is generated after all player outcomes are available."""
+    names = ("Alice", "Bob")
+    schema = participant_schema(RoundResolution, names)
+    assert list(schema.model_fields) == ["player_resolutions", "global_narrative"]
+    assert list(schema.model_json_schema()["properties"]) == [
+        "player_resolutions",
+        "global_narrative",
+    ]
+
+    prompt = prompts.resolution_prompt({name: "Take an action." for name in names})["content"]
+    assert "Generate player_resolutions first" in prompt
+    assert "synthesize global_narrative from those outcomes" in prompt
 
 
 def test_dice_planner_uses_central_system_prompt():
@@ -81,10 +96,26 @@ def test_dice_planner_uses_central_system_prompt():
     assert manager._fixed_messages("round")[0]["content"] == settings.llm.system_prompt
 
 
+def test_active_guidance_is_near_current_input_and_keeps_percentage_authority():
+    """Narration refreshes steering without turning it into mandatory random events."""
+    guidance = "Occasionally show a distant visitor."
+    prompt = prompts.prepare_request_prompt(
+        prompts.resolution_prompt({"Alice": "Walk south."}, guidance=guidance),
+        True,
+        guidance,
+    )["content"]
+    assert prompt.index(guidance) > prompt.index("Current round actions:")
+    assert "allow gaps and variation" in prompt
+    assert "never apply failed or untriggered percentage events" in prompt
+    planning = prompts.dice_prompt({"Alice": "Walk south."})
+    assert prompts.prepare_request_prompt(planning, False, guidance) == planning
+
+
 def test_resolved_rounds_retain_compact_input_records():
     """Repeated adjudication instructions are not replayed as round history."""
 
     async def run():
+        settings.llm.context_window_size = 32_768
         manager = LLMContextManager(FakeClient())
         await manager.generate_resolution({"Alice": "Inspect the signal."})
 
@@ -92,6 +123,53 @@ def test_resolved_rounds_retain_compact_input_records():
         assert manager.history[0]["content"].startswith("Round action record")
         assert "Inspect the signal." in manager.history[0]["content"]
         assert "Resolve all supplied actions" not in manager.history[0]["content"]
+
+    asyncio.run(run())
+
+
+def test_failed_request_does_not_change_compaction_participants(monkeypatch):
+    """Pending participants never enter durable names, even before compaction."""
+
+    async def run():
+        settings.llm.context_window_size = 32_768
+        settings.llm.max_retries = 0
+        manager = LLMContextManager(FakeClient())
+        manager._known_player_names = ["Alice"]
+        seen = []
+
+        async def compact(*args):
+            seen.append(list(manager._known_player_names))
+
+        async def fail(*args, **kwargs):
+            raise LLMResolutionError("Injected failure")
+
+        monkeypatch.setattr(manager, "_compact_if_needed", compact)
+        monkeypatch.setattr(manager, "_parse", fail)
+        with pytest.raises(LLMResolutionError, match="Injected failure"):
+            await manager.generate_resolution({"Bob": "Wait."})
+        assert seen == [["Alice"]]
+        assert manager._known_player_names == ["Alice"]
+        assert manager.history == []
+
+    asyncio.run(run())
+
+
+def test_normalized_narrative_is_privacy_checked_before_commit(monkeypatch):
+    """A presentation mutation cannot bypass the public-output guard."""
+
+    async def run():
+        settings.llm.context_window_size = 32_768
+        settings.llm.max_retries = 0
+        manager = LLMContextManager(FakeClient())
+        manager.set_genesis("A gate.", "The sealed gate hides a secret alarm.")
+        monkeypatch.setattr(
+            "logic.llm_manager.name_resolution",
+            lambda name, text: "The sealed gate hides a secret alarm.",
+        )
+        with pytest.raises(LLMResolutionError, match="private guidance"):
+            await manager.generate_resolution({"Alice": "Wait."})
+        assert manager.history == []
+        assert manager._known_player_names == []
 
     asyncio.run(run())
 
@@ -141,7 +219,7 @@ def test_chance_audit_restores_raw_narrative_before_commit_or_failure(preserved,
                 with pytest.raises(LLMResolutionError, match="consequences were omitted"):
                     await manager.generate_resolution({"Alice": "Wait."}, chance_events=[check])
                 assert manager.history == []
-            assert manager._last_response_text == narrative[0]
+            assert not hasattr(manager, "_last_response_text")
             assert len(client.calls) == manager.game_usage.attempts == 2
         finally:
             await manager.close()

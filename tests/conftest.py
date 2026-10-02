@@ -41,5 +41,8 @@ def isolated_settings(monkeypatch):
             model_name="test-only",
             system_prompt="Keep coherent public outcomes; never expose private DM guidance.",
             tokenizer_encoding=None,
+            initial_output_tokens=1024,
+            round_output_tokens=2048,
+            summary_output_tokens=1024,
         ),
     )

@@ -36,7 +36,7 @@ from logic.dice import (
     normalize_chance_rule_decision,
 )
 from logic.presentation import name_resolution
-from logic.debug_log import RawResponseLogger, request_type_context
+from logic.debug_log import RawResponseLogger, request_type_context, set_debug_round_number
 from logic.llm import auditing, prompts
 from logic.llm.errors import (
     LLMBackendUnavailableError,
@@ -44,8 +44,10 @@ from logic.llm.errors import (
     LLMResolutionError,
 )
 from logic.llm.response_schemas import participant_schema
+from logic.llm.request_kind import RequestKind
 from logic.llm.tokenization import TokenBudget
 from logic.llm.validation import check_semantics, check_public_output, normalize_hidden_roll_sources
+from logic.models import PreparedResolution
 
 # Keep the existing public imports available to callers.
 __all__ = [
@@ -73,10 +75,10 @@ class LLMContextManager:
         self.client = (
             client.with_options(max_retries=0) if isinstance(client, AsyncOpenAI) else client
         )
+        self._debug_logger: RawResponseLogger | None = None
         self.budget = TokenBudget()
         self._retained_measurement = None
         self.system_prompt = {"role": "system", "content": settings.llm.system_prompt}
-        self._last_response_text: str | None = None
         self.system_prompt_tokens = self.budget.count_tokens(settings.llm.system_prompt)
         self.genesis_state: dict[str, str] | None = None
         self.history: list[dict[str, str]] = []
@@ -95,9 +97,9 @@ class LLMContextManager:
         self.round_failures = 0
         self.last_round_error: str | None = None
         self._round_started: float | None = None
+        self._memory_revision = 0
 
-    @staticmethod
-    def _create_client() -> AsyncOpenAI:
+    def _create_client(self) -> AsyncOpenAI:
         """Create either a direct OpenAI client or a local compatible client."""
         client_options: dict[str, Any] = {
             "api_key": settings.llm.api_key,
@@ -108,6 +110,7 @@ class LLMContextManager:
             client_options["base_url"] = settings.llm.endpoint
         if settings.llm.debug_raw_responses:
             raw_logger = RawResponseLogger()
+            self._debug_logger = raw_logger
             client_options["http_client"] = DefaultAsyncHttpxClient(
                 event_hooks={
                     "request": [raw_logger.capture_request],
@@ -134,9 +137,9 @@ class LLMContextManager:
             )
         self.genesis_state = {"role": "user", "content": content}
         self.history.clear()
+        self._memory_revision += 1
         self._retained_measurement = None
         self.budget.clear_caches()
-        self._last_response_text = None
         self.memory = None
         self.private_guidance = guidance
         self.chance_rule_interpretation = None
@@ -149,8 +152,9 @@ class LLMContextManager:
         self.round_usage_by_kind = {}
         self.round_work_seconds = 0.0
         self.round_failures = 0
-        self.last_round_error: str | None = None
+        self.last_round_error = None
         self._round_started = None
+        set_debug_round_number(None)
 
     async def generate_scenario_title(self) -> str:
         """Generate only a title, without creating or remembering narrative."""
@@ -168,7 +172,6 @@ class LLMContextManager:
     async def generate_start_state(self, player_names: list[str]) -> RoundResolution:
         """Introduce the joined players in the scenario when play begins."""
         logger.info("Generating start state for %d players", len(player_names))
-        self._known_player_names = list(dict.fromkeys([*self._known_player_names, *player_names]))
         prompt = prompts.start_state_prompt(player_names)
         return await self._request(
             prompt,
@@ -179,6 +182,46 @@ class LLMContextManager:
             opening_names=tuple(player_names),
             history_prompt=prompts.opening_memory_prompt(player_names),
         )
+
+    async def _stage(self, generate) -> PreparedResolution:
+        """Compute conversation changes privately; cancellation restores the checkpoint."""
+        memory, history, names = self.memory, list(self.history), list(self._known_player_names)
+        revision = self._memory_revision
+        try:
+            result = await generate()
+            return PreparedResolution(
+                result, self.memory, tuple(self.history), tuple(self._known_player_names), revision
+            )
+        finally:
+            self.memory, self.history, self._known_player_names = memory, history, names
+
+    async def stage_start_state(self, player_names: list[str]) -> PreparedResolution:
+        return await self._stage(lambda: self.generate_start_state(player_names))
+
+    async def stage_resolution(
+        self,
+        actions: dict[str, str],
+        dice_results: dict[str, int],
+        hidden_rolls: set[str],
+        chance_events: list[ChanceEventResult] | None = None,
+    ) -> PreparedResolution:
+        return await self._stage(
+            lambda: self.generate_resolution(
+                actions,
+                dice_results,
+                hidden_rolls,
+                **({"chance_events": chance_events} if chance_events else {}),
+            )
+        )
+
+    def commit_resolution(self, prepared: PreparedResolution) -> None:
+        if prepared.revision != self._memory_revision:
+            raise RuntimeError("Stale conversation checkpoint")
+        self.memory = prepared.memory
+        self.history = list(prepared.history)
+        self._known_player_names = list(prepared.names)
+        self._memory_revision += 1
+        self._retained_measurement = None
 
     async def prepare_chance_rule(self) -> None:
         """Normalize the one conditional chance instruction once before players act."""
@@ -203,9 +246,12 @@ class LLMContextManager:
         interpretation = self.chance_rule_interpretation
         if interpretation is None:
             return None
+        prompt, schema = self._build_round_request(
+            RequestKind.CHANCE_TRIGGER, round_buffer, current_state
+        )
         result = await self._request(
-            prompts.chance_trigger_prompt(round_buffer, current_state, interpretation),
-            ChanceTriggerPlan,
+            prompt,
+            schema,
             remember=False,
             include_history=False,
             kind="chance_trigger",
@@ -238,19 +284,12 @@ class LLMContextManager:
         guidance, durable memory and recent rounds so unchanged facts still affect checks.
         """
         logger.info("Planning dice for %d player actions", len(round_buffer))
-        self._known_player_names = list(dict.fromkeys([*self._known_player_names, *round_buffer]))
         await self.prepare_chance_rule()
         chance_decision = await self._plan_chance_triggers(round_buffer, current_state)
-        prompt = prompts.dice_prompt(round_buffer, current_state)
+        prompt, schema = self._build_round_request(RequestKind.DICE, round_buffer, current_state)
         return await self._request(
             prompt,
-            participant_schema(
-                DicePlan,
-                tuple(round_buffer),
-                has_non_percentage_private_guidance(self.private_guidance),
-                settings.llm.provider,
-                private_sources=non_percentage_guidance_lines(self.private_guidance),
-            ),
+            schema,
             remember=False,
             kind="dice",
             expected_names=tuple(round_buffer),
@@ -271,15 +310,16 @@ class LLMContextManager:
             len(round_buffer),
             len(dice_results or {}),
         )
-        self._known_player_names = list(dict.fromkeys([*self._known_player_names, *round_buffer]))
-        prompt = prompts.resolution_prompt(
-            round_buffer, dice_results, hidden_rolls, chance_events, self.private_guidance
+        prompt, schema = self._build_round_request(
+            RequestKind.ROUND,
+            round_buffer,
+            dice_results=dice_results,
+            hidden_rolls=hidden_rolls,
+            chance_events=chance_events,
         )
         return await self._request(
             prompt,
-            participant_schema(
-                RoundResolution, tuple(round_buffer), provider=settings.llm.provider
-            ),
+            schema,
             remember=True,
             expected_names=tuple(round_buffer),
             private_rolls={
@@ -290,6 +330,38 @@ class LLMContextManager:
             private_events=chance_events,
             history_prompt=prompts.round_memory_prompt(round_buffer),
         )
+
+    def _build_round_request(
+        self,
+        kind: RequestKind,
+        actions: dict[str, str],
+        current_state: str = "",
+        *,
+        dice_results: dict[str, int] | None = None,
+        hidden_rolls: set[str] | None = None,
+        chance_events: list[ChanceEventResult] | None = None,
+    ) -> tuple[dict[str, str], type[BaseModel]]:
+        """Build the same prompt/schema for admission and actual round calls."""
+        if kind == RequestKind.ROUND:
+            return prompts.resolution_prompt(
+                actions, dice_results, hidden_rolls, chance_events, self.private_guidance
+            ), participant_schema(RoundResolution, tuple(actions), provider=settings.llm.provider)
+        if kind == RequestKind.DICE:
+            return prompts.dice_prompt(actions, current_state), participant_schema(
+                DicePlan,
+                tuple(actions),
+                has_non_percentage_private_guidance(self.private_guidance),
+                settings.llm.provider,
+                private_sources=non_percentage_guidance_lines(self.private_guidance),
+            )
+        if kind == RequestKind.CHANCE_TRIGGER and self.chance_rule_interpretation is not None:
+            return (
+                prompts.chance_trigger_prompt(
+                    actions, current_state, self.chance_rule_interpretation
+                ),
+                ChanceTriggerPlan,
+            )
+        raise ValueError(f"Unsupported round request kind: {kind}")
 
     def _fixed_messages(self, kind: str = "round") -> list[dict[str, str]]:
         """Return the stable system/genesis/memory prefix for a request kind.
@@ -321,45 +393,14 @@ class LLMContextManager:
         """
         await self.prepare_chance_rule()
         await self.budget.discover_context_window()
-        resolution_schema = participant_schema(
-            RoundResolution, tuple(actions), provider=settings.llm.provider
-        )
-        dice_schema = participant_schema(
-            DicePlan,
-            tuple(actions),
-            has_non_percentage_private_guidance(self.private_guidance),
-            settings.llm.provider,
-            private_sources=non_percentage_guidance_lines(self.private_guidance),
-        )
-        requests = (
-            (
-                prompts.prepare_request_prompt(
-                    prompts.resolution_prompt(actions, guidance=self.private_guidance), True
-                ),
-                resolution_schema,
-                "round",
-            ),
-            (
-                prompts.dice_prompt(actions, current_state),
-                dice_schema,
-                "dice",
-            ),
-        )
+        kinds = [RequestKind.ROUND, RequestKind.DICE]
         if self.chance_rule_interpretation is not None:
-            requests = (
-                requests[0],
-                (
-                    prompts.chance_trigger_prompt(
-                        actions,
-                        current_state,
-                        self.chance_rule_interpretation,
-                    ),
-                    ChanceTriggerPlan,
-                    "chance_trigger",
-                ),
-                requests[1],
+            kinds.insert(1, RequestKind.CHANCE_TRIGGER)
+        for kind in kinds:
+            prompt, schema = self._build_round_request(kind, actions, current_state)
+            prompt = prompts.prepare_request_prompt(
+                prompt, issubclass(schema, RoundResolution), self.private_guidance
             )
-        for prompt, schema, kind in requests:
             count = await self.budget.input_tokens(
                 [*self._fixed_messages(kind), prompt], schema, kind
             )
@@ -391,7 +432,10 @@ class LLMContextManager:
         repair instructions, performs chance/hidden-check audits, and stores the
         supplied compact input record only after all checks pass.
         """
-        prompt = prompts.prepare_request_prompt(prompt, issubclass(schema, RoundResolution))
+        kind = RequestKind(kind)
+        prompt = prompts.prepare_request_prompt(
+            prompt, issubclass(schema, RoundResolution), self.private_guidance
+        )
         await self.budget.discover_context_window()
         if include_history:
             await self._compact_if_needed(prompt, schema, kind)
@@ -400,15 +444,18 @@ class LLMContextManager:
             result = None
             try:
                 result = await self._parse(messages, schema, kind, repair_attempt=repair)
+                response_text = getattr(result, "_provider_response_text", None)
                 if isinstance(result, DicePlan):
                     # A stray privacy label cannot create a roll the planner declined.
-                    # Leave unknown names and duplicates for semantic validation.
+                    # Reject unknown names before filtering declined checks.
+                    if not set(result.hidden_rolls) <= set(result.rolls):
+                        raise LLMResolutionError("Invalid hidden dice membership.")
                     result = result.model_copy(
                         update={
                             "hidden_rolls": [
                                 name
                                 for name in result.hidden_rolls
-                                if result.rolls.get(name) is not False
+                                if result.rolls.get(name) is True
                             ]
                         }
                     )
@@ -437,6 +484,8 @@ class LLMContextManager:
                     result = await auditing.classify_hidden_checks(
                         self._parse, result, planning_input or {}, repair_attempt=repair
                     )
+                    result = self._revalidate_result(result, DicePlan)
+                    check_semantics(result, expected_names)
                 if isinstance(result, ScenarioTitle):
                     public_title = RoundResolution(
                         global_narrative=result.title, player_resolutions={}
@@ -444,6 +493,8 @@ class LLMContextManager:
                     check_semantics(public_title, ())
                     check_public_output(public_title, {}, self.private_guidance)
                 if isinstance(result, RoundResolution):
+                    result = self._normalize_narrative(result, schema)
+                    check_semantics(result, expected_names)
                     checks = dict(private_rolls or {})
                     checks.update(
                         {f"event-{i}": event.roll for i, event in enumerate(private_events or [])}
@@ -457,8 +508,9 @@ class LLMContextManager:
                             ]
                         )
                         for event in private_events:
+                            probability = re.escape(str(event.event.chance_percent))
                             if re.search(
-                                rf"\b{event.event.chance_percent}\s*(?:%|percent\b)",
+                                rf"\b{probability}\s*(?:%|percent\b)",
                                 public_text,
                                 re.IGNORECASE,
                             ):
@@ -474,19 +526,15 @@ class LLMContextManager:
                             "name with an occupation, class, or role: " + json.dumps(opening_names)
                         )
                     if any(event.occurred for event in (private_events or [])):
-                        # Audits must not replace the validated narrative saved in history.
-                        narrative_response = self._last_response_text
-                        try:
-                            await auditing.audit_chance_outcomes(
-                                self._parse,
-                                result,
-                                private_events,
-                                repair_attempt=repair,
-                            )
-                        finally:
-                            self._last_response_text = narrative_response
+                        await auditing.audit_chance_outcomes(
+                            self._parse, result, private_events, repair_attempt=repair
+                        )
                 break
             except LLMResolutionError as exc:
+                # Transport failures have already exhausted their provider retry
+                # budget. A semantic repair cannot fix an unavailable provider.
+                if isinstance(exc.__cause__, OpenAIError):
+                    raise
                 logger.warning(
                     "LLM %s output validation failed (repair=%d): %s", kind, repair, str(exc)
                 )
@@ -528,34 +576,58 @@ class LLMContextManager:
                         ),
                     },
                 ]
-        if isinstance(result, RoundResolution):
-            result = result.model_copy(
-                update={
-                    "player_resolutions": {
-                        name: name_resolution(name, text)
-                        for name, text in result.player_resolutions.items()
-                    }
-                }
-            )
         if remember:
-            content = result.model_dump_json()
-            if self._last_response_text:
-                try:
-                    original = schema.model_validate_json(self._last_response_text)
-                    if original.model_dump() == result.model_dump():
-                        content = self._last_response_text
-                except (ValidationError, ValueError):
-                    pass
-            self.history.extend(
-                [
-                    history_prompt or prompt,
-                    {"role": "assistant", "content": content},
-                ]
+            names = opening_names if opening_names is not None else expected_names
+            self._commit_history(
+                result, schema, history_prompt or prompt, response_text, names or ()
             )
         return result
 
+    @staticmethod
+    def _revalidate_result(result: BaseModel, schema: type[BaseModel]) -> BaseModel:
+        """Check model_copy updates with the repairable output contract."""
+        try:
+            return schema.model_validate(result.model_dump())
+        except ValidationError as exc:
+            raise LLMResolutionError("Normalized output violated its schema.") from exc
+
+    def _normalize_narrative(
+        self, result: RoundResolution, schema: type[BaseModel]
+    ) -> RoundResolution:
+        """Normalize presentation before final semantic and privacy checks."""
+        normalized = result.model_copy(
+            update={
+                "player_resolutions": {
+                    name: name_resolution(name, text)
+                    for name, text in result.player_resolutions.items()
+                }
+            }
+        )
+        return self._revalidate_result(normalized, schema)
+
+    def _commit_history(
+        self,
+        result: BaseModel,
+        schema: type[BaseModel],
+        prompt: dict[str, str],
+        response_text: str | None,
+        names: tuple[str, ...],
+    ) -> None:
+        """Commit validated output and its participants together without awaiting."""
+        content = result.model_dump_json()
+        if response_text:
+            try:
+                original = schema.model_validate_json(response_text)
+                if original.model_dump() == result.model_dump():
+                    content = response_text
+            except (ValidationError, ValueError):
+                pass
+        self.history.extend([prompt, {"role": "assistant", "content": content}])
+        self._known_player_names = list(dict.fromkeys([*self._known_player_names, *names]))
+
     def begin_round_usage(self, number: int) -> None:
         """Start accounting once per round; host retries keep the same totals."""
+        set_debug_round_number(number)
         if self.usage_round != number:
             self.usage_round = number
             self.round_usage = UsageTotals()
@@ -574,6 +646,39 @@ class LLMContextManager:
             self._round_started = None
             self.round_failures += error is not None
             self.last_round_error = error
+
+    def round_debug_state(self) -> dict[str, Any]:
+        """Return private resolver state for the local full-round diagnostic."""
+        return {
+            "private_guidance": self.private_guidance,
+            "genesis_state": self.genesis_state,
+            "durable_memory": self.memory,
+            "recent_history": list(self.history),
+            "known_player_names": list(self._known_player_names),
+            "chance_rule_interpretation": (
+                self.chance_rule_interpretation.model_dump()
+                if self.chance_rule_interpretation is not None
+                else None
+            ),
+        }
+
+    async def complete_round_debug(self, number: int, engine_summary: dict[str, Any]) -> None:
+        """Combine the round's requests with engine and resolver private state."""
+        try:
+            if self._debug_logger is None:
+                return
+            await self._debug_logger.finish_round(
+                number,
+                {
+                    "engine": engine_summary,
+                    "resolver": self.round_debug_state(),
+                },
+            )
+        except Exception as exc:
+            # Diagnostics must never prevent a committed round from being published.
+            logger.warning("Round debug log could not be finalized: %s", type(exc).__name__)
+        finally:
+            set_debug_round_number(None)
 
     async def refresh_usage(self) -> None:
         """Measure retained messages with the request tokenizer, without inference."""
@@ -620,6 +725,7 @@ class LLMContextManager:
         repair_attempt: int = 0,
     ) -> Any:
         """Measure each attempt, including SDK-compatible transient retries."""
+        kind = RequestKind(kind)
         count = await self.budget.input_tokens(messages, schema, kind)
         if not self.budget.fits(count, kind):
             raise LLMResolutionError(
@@ -636,9 +742,11 @@ class LLMContextManager:
             async with asyncio.timeout(overall_timeout):
                 for attempt in range(attempt_limit):
                     try:
-                        return await self._parse_attempt(
+                        result, response_text = await self._parse_attempt(
                             messages, schema, kind, count, attempt, repair_attempt
                         )
+                        result._provider_response_text = response_text
+                        return result
                     except LLMResolutionError as exc:
                         cause = exc.__cause__
                         status = getattr(cause, "status_code", None)
@@ -662,8 +770,9 @@ class LLMContextManager:
         count: int,
         attempt: int,
         repair_attempt: int = 0,
-    ) -> Any:
+    ) -> tuple[BaseModel, str | None]:
         """Send and account for one provider attempt."""
+        kind = RequestKind(kind)
         if self.client is None:
             self.client = self._create_client()
         started = perf_counter()
@@ -693,7 +802,7 @@ class LLMContextManager:
             result = schema.model_validate(
                 parsed.model_dump() if isinstance(parsed, BaseModel) else parsed
             )
-            self._last_response_text = getattr(choice.message, "content", None)
+            response_text = getattr(choice.message, "content", None)
         except asyncio.CancelledError:
             error = "CancelledError"
             raise
@@ -757,7 +866,7 @@ class LLMContextManager:
                 self.round_usage_by_kind.setdefault(kind, UsageTotals()).add(record)
             self.last_token_usage = record["total_tokens"] or count
             logger.info("LLM usage %s", json.dumps(record, sort_keys=True))
-        return result
+        return result, response_text
 
     async def _compact_if_needed(
         self, prompt: dict[str, str], schema: type[BaseModel], kind: str

@@ -28,6 +28,7 @@ class ControlledResolver(FakeResolver):
         self.plans = 0
         self.received_rolls = []
         self.received_actions = []
+        self.received_presence = []
         self.hidden = False
         self.closed = False
 
@@ -69,6 +70,7 @@ class ControlledResolver(FakeResolver):
         """Return a resolution, optionally failing."""
         self.received_rolls.append(dict(dice_results or {}))
         self.received_actions.append(dict(actions))
+        self.received_presence.append(actions.presence)
         await self.gate("round")
         if self.fail_round:
             raise LLMResolutionError("PRIVATE failure")
@@ -181,15 +183,15 @@ def test_player_still_absent_at_opening_keeps_departure_and_later_return(tmp_pat
             await engine.process_payload("host", payload("action", action="Wait"))
             await engine.wait_for_inference()
             assert resolver.received_actions[-1]["Host"] == "Wait"
-            assert "in-world departure" in resolver.received_actions[-1]["Player"]
+            assert resolver.received_presence[-1]["Player"].departed
             await engine.process_payload("host", payload("action", action="Wait again"))
             await engine.wait_for_inference()
             assert resolver.received_actions[-1] == {"Host": "Wait again"}
             await auth(engine, "player")
             await submit_round(engine)
             await engine.wait_for_inference()
-            assert "in-world return" in resolver.received_actions[-1]["Player"]
-            assert "in-world departure" not in resolver.received_actions[-1]["Player"]
+            assert resolver.received_presence[-1]["Player"].returned
+            assert not resolver.received_presence[-1]["Player"].departed
         finally:
             await engine.shutdown()
 
@@ -219,6 +221,7 @@ def test_usage_failure_cannot_pause_a_committed_round(tmp_path, monkeypatch, fai
             await asyncio.Event().wait()
 
         resolver.refresh_usage = refresh
+        sender.events.clear()
         await submit_round(engine)
         await asyncio.wait_for(engine.wait_for_inference(), 1)
         assert engine.state is GameState.ACTIVE_TURN
@@ -226,7 +229,16 @@ def test_usage_failure_cannot_pause_a_committed_round(tmp_path, monkeypatch, fai
         assert not engine.round_paused
         assert engine.pending_resolution is None
         assert observations == [(1, 2, False)]
-        assert len(sender.events_of_type("token_usage")) == 1
+        assert (
+            len(
+                [
+                    event
+                    for target, event in sender.events
+                    if target is None and event.type == "token_usage"
+                ]
+            )
+            == 1
+        )
         assert not sender.events_of_type("error")
         await engine.shutdown()
 
@@ -465,7 +477,7 @@ def test_new_connection_transitions_survive_older_round_commit(tmp_path):
         assert engine.players["player"].return_pending
         await submit_round(engine)
         await engine.wait_for_inference()
-        assert "in-world return" in resolver.received_actions[-1]["Player"]
+        assert resolver.received_presence[-1]["Player"].returned
         assert not engine.players["player"].return_pending
         await engine.shutdown()
 

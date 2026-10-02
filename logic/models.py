@@ -8,6 +8,41 @@ from typing import Any, Protocol
 from core.schemas import ChanceEventResult, DicePlan, RoundResolution, ServerEvent
 
 
+@dataclass(frozen=True, slots=True)
+class Participant:
+    name: str
+    departed: bool
+    returned: bool
+    connection_version: int
+
+
+class RoundActions(dict[str, str]):
+    """Untrusted attempts with separately owned server presence metadata."""
+
+    def __init__(self, actions: dict[str, str], presence: dict[str, Participant]):
+        super().__init__(actions)
+        self.presence = dict(presence)
+
+
+@dataclass(slots=True)
+class PendingRound:
+    actions: dict[str, str]
+    participants: dict[str, Participant]
+    previous_state: str
+    dice: dict[str, int] | None = None
+    hidden: set[str] = field(default_factory=set)
+    chance_events: list[ChanceEventResult] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedResolution:
+    result: RoundResolution
+    memory: dict[str, str] | None = None
+    history: tuple[dict[str, str], ...] = ()
+    names: tuple[str, ...] = ()
+    revision: int = 0
+
+
 class GameState(Enum):
     """States of the game session lifecycle."""
 
@@ -65,6 +100,10 @@ class ResolutionManager(Protocol):
         """Finish timing round work, excluding the human wait before a retry."""
         ...
 
+    async def complete_round_debug(self, number: int, engine_summary: dict[str, Any]) -> None:
+        """Persist the private full-round diagnostic after a committed round."""
+        ...
+
     def set_genesis(self, scenario: str, guidance: str = "") -> None:
         """Set the initial scenario and optional guidance."""
         ...
@@ -102,6 +141,20 @@ class ResolutionManager(Protocol):
     async def preflight_round(self, actions: dict[str, str], current_state: str = "") -> None:
         """Reject actions that exceed the context budget."""
         ...
+
+    async def refresh_usage(self) -> None: ...
+
+    async def stage_start_state(self, player_names: list[str]) -> PreparedResolution: ...
+
+    async def stage_resolution(
+        self,
+        actions: dict[str, str],
+        dice_results: dict[str, int],
+        hidden_rolls: set[str],
+        chance_events: list[ChanceEventResult] | None = None,
+    ) -> PreparedResolution: ...
+
+    def commit_resolution(self, prepared: PreparedResolution) -> None: ...
 
     async def close(self) -> None:
         """Release backend resources."""

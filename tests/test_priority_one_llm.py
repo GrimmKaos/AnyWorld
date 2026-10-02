@@ -2,95 +2,21 @@
 
 import asyncio
 import json
-from types import SimpleNamespace
 
 import httpx
 import pytest
 
 from core.config import settings
 from core.schemas import (
-    AuditVerdict,
     ContextSummary,
     DicePlan,
     RoundResolution,
     ScenarioTitle,
-    SummaryAudit,
 )
 from logic.llm_manager import LLMContextManager, LLMResolutionError
 
 
-class FakeClient:
-    """Fake OpenAI client that returns a configured result."""
-
-    def __init__(self, result=None, finish_reason="stop"):
-        """Initialize the fake client."""
-        self.calls = []
-        self.result = result
-        self.finish_reason = finish_reason
-        self.closed = False
-        self.beta = SimpleNamespace(
-            chat=SimpleNamespace(completions=SimpleNamespace(parse=self.parse))
-        )
-
-    async def parse(self, **kwargs):
-        """Record the call and return a configured result."""
-        self.calls.append(kwargs)
-        result = self.result
-        if callable(result):
-            result = result(kwargs)
-        elif isinstance(result, DicePlan) and kwargs["response_format"] in (
-            AuditVerdict,
-            SummaryAudit,
-        ):
-            result = kwargs["response_format"](preserved=True, corrections=[])
-        if isinstance(result, Exception):
-            raise result
-        if result is None:
-            schema = kwargs["response_format"]
-            if issubclass(schema, DicePlan):
-                names = schema.model_json_schema()["properties"]["rolls"].get("required", ["Alice"])
-                result = DicePlan(
-                    rolls={name: True for name in names},
-                    hidden_rolls=[],
-                )
-            elif schema is ScenarioTitle:
-                result = ScenarioTitle(title="The gate")
-            elif schema in (AuditVerdict, SummaryAudit):
-                result = schema(preserved=True, corrections=[])
-            elif issubclass(schema, ContextSummary):
-                result = memory()
-            else:
-                result = RoundResolution(
-                    global_narrative="A breeze rises.",
-                    player_resolutions={
-                        name: f"{name} waits."
-                        for name in schema.model_json_schema()["properties"][
-                            "player_resolutions"
-                        ].get("required", ["Alice"])
-                    },
-                )
-        return SimpleNamespace(
-            choices=[
-                SimpleNamespace(
-                    message=SimpleNamespace(parsed=result), finish_reason=self.finish_reason
-                )
-            ],
-            usage=SimpleNamespace(total_tokens=100),
-        )
-
-    async def close(self):
-        """Record the close."""
-        self.closed = True
-
-
-def memory():
-    """Return a sample durable memory summary."""
-    return ContextSummary(
-        world_state="The north gate remains locked. The vial was consumed.",
-        player_states={"Alice": "Broken wrist; carries the brass key; at the north gate."},
-        important_npcs="Guard Mira trusts Alice.",
-        unresolved_threads=["Return Mira's key before dusk."],
-    )
+from support import FakeClient, memory
 
 
 @pytest.mark.parametrize(
@@ -118,6 +44,7 @@ def test_every_request_caps_output_and_counts_backend_template(
     async def run():
         settings.llm.provider = provider
         settings.llm.reasoning_effort = effort
+        effective_effort = "none" if kind == "dice" else effort
         client = FakeClient()
         manager = LLMContextManager(client)
         manager.context_window_size = 32_768
@@ -127,8 +54,8 @@ def test_every_request_caps_output_and_counts_backend_template(
             seen.append(request.url.path)
             if request.url.path == "/apply-template":
                 assert json.loads(request.content)["chat_template_kwargs"] == {
-                    "enable_thinking": effort != "none",
-                    "reasoning_effort": effort,
+                    "enable_thinking": effective_effort != "none",
+                    "reasoning_effort": effective_effort,
                 }
                 return httpx.Response(200, json={"prompt": "MODEL TEMPLATE + multilingual 日本語"})
             if request.url.path == "/tokenize":
@@ -139,9 +66,9 @@ def test_every_request_caps_output_and_counts_backend_template(
         manager.budget._http = httpx.AsyncClient(transport=httpx.MockTransport(backend))
         await manager._parse([{"role": "user", "content": "Act"}], schema, kind)
         request = client.calls[0]
-        assert request["reasoning_effort"] == effort
+        assert request["reasoning_effort"] == effective_effort
         visible_cap = getattr(settings.llm, f"{kind}_output_tokens")
-        thinking_cap = {"none": 0, "low": 2_048, "medium": 4_096, "high": 8_192}[effort]
+        thinking_cap = {"none": 0, "low": 2_048, "medium": 4_096, "high": 8_192}[effective_effort]
         assert request[cap_key] == visible_cap + thinking_cap
         assert (
             "max_tokens" if cap_key == "max_completion_tokens" else "max_completion_tokens"
@@ -151,8 +78,8 @@ def test_every_request_caps_output_and_counts_backend_template(
         if provider == "compatible":
             assert request["extra_body"] == {
                 "chat_template_kwargs": {
-                    "enable_thinking": effort != "none",
-                    "reasoning_effort": effort,
+                    "enable_thinking": effective_effort != "none",
+                    "reasoning_effort": effective_effort,
                 }
             }
             assert seen == ["/apply-template", "/tokenize"]
@@ -390,6 +317,7 @@ def test_planner_sees_private_guidance_durable_facts_and_recent_changes():
         )
         manager = LLMContextManager(client)
         manager.set_genesis("North gate", "PRIVATE_TRIGGER: invisible alarm at gate")
+        manager.context_window_size = 32_768
         manager.memory = {"role": "user", "content": memory().model_dump_json()}
         manager.history = [
             {"role": "user", "content": "Alice waits"},

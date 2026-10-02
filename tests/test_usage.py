@@ -8,9 +8,11 @@ import httpx
 import pytest
 from openai import APIConnectionError
 
+from core.config import settings
 from core.schemas import ContextSummary, DicePlan, RoundResolution
 from logic.llm_manager import LLMContextManager, LLMResolutionError
 from logic.engine import GameEngine
+from logic.models import Participant, PendingRound
 from test_engine import FakeSender
 from test_priority_one_llm import FakeClient, memory
 
@@ -111,8 +113,9 @@ def test_response_usage_survives_output_failure(truncated):
         else:
             await manager.generate_scenario_title()
         usage = manager.usage_snapshot()["game"]
-        assert usage["total_tokens"] == 120
-        assert usage["errors"] == int(truncated)
+        attempts = settings.llm.max_retries + 1 if truncated else 1
+        assert usage["total_tokens"] == 120 * attempts
+        assert usage["errors"] == (attempts if truncated else 0)
 
     asyncio.run(run())
 
@@ -151,23 +154,22 @@ def test_engine_reports_semantic_failure_and_retains_cost_on_retry(tmp_path, mon
         manager = LLMContextManager(MeteredClient(DicePlan(rolls={"Alice": True}, hidden_rolls=[])))
         sender = FakeSender()
         engine = GameEngine(sender, manager)
-        engine.pending_resolution = {
-            "actions": {"id": "Wait"},
-            "participants": {"id": ("Borin", False, False, 0)},
-            "dice": None,
-            "previous_state": "A gate",
-        }
+        engine.pending_resolution = PendingRound(
+            {"id": "Wait"}, {"id": Participant("Borin", False, False, 0)}, "A gate"
+        )
         for expected in (1, 2):
             with pytest.raises(LLMResolutionError, match="participants"):
                 await engine._resolve_round(0)
             await engine._publish_usage()
             payload = sender.events_of_type("token_usage")[-1].payload
-            assert payload["round_failures"] == expected
+            diagnostics = manager.usage_snapshot()
+            assert "round_failures" not in payload
+            assert diagnostics["round_failures"] == expected
             assert payload["round"]["attempts"] == 2 * expected
             assert payload["round"]["total_tokens"] == 240 * expected
             assert payload["round"]["errors"] == 0
-            assert payload["last_round_error"] == "LLMResolutionError"
-            assert payload["round_work_seconds"] > 0
+            assert diagnostics["last_round_error"] == "LLMResolutionError"
+            assert diagnostics["round_work_seconds"] > 0
 
     asyncio.run(run())
 

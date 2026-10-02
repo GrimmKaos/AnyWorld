@@ -196,9 +196,7 @@ class LobbyMixin:
     ) -> None:
         """Generate only the title and open the lobby for players."""
         self.resolver.set_genesis(scenario, guidance)
-        prepare_chance_rule = getattr(self.resolver, "prepare_chance_rule", None)
-        if prepare_chance_rule is not None:
-            await prepare_chance_rule()
+        await self.resolver.prepare_chance_rule()
         title = await self.resolver.generate_scenario_title()
         async with self.effects_lock:
             async with self.lock:
@@ -235,7 +233,8 @@ class LobbyMixin:
 
     async def _prepare_start(self: "GameEngine", epoch: int, names: list[str]) -> None:
         """Introduce the players and transition the game to its active turn."""
-        resolution = await self.resolver.generate_start_state(names)
+        prepared = await self.resolver.stage_start_state(names)
+        resolution = prepared.result
         async with self.effects_lock:
             async with self.lock:
                 if not self._job_current(epoch):
@@ -250,6 +249,7 @@ class LobbyMixin:
                 if not self._job_current(epoch):
                     return
                 self.current_scenario_state = resolution.global_narrative
+                self.resolver.commit_resolution(prepared)
                 self.opening_scenario = resolution.global_narrative
                 # The opening establishes in-world presence. Earlier transport
                 # reconnects are not departures or returns within the story.
