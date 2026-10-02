@@ -147,7 +147,7 @@ def _generate_cert(ip: str, addresses: list[str] | None = None) -> tuple[Path, P
             datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=VALIDITY_DAYS)
         )
         .add_extension(x509.SubjectAlternativeName(san_entries), critical=False)
-        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
         .sign(key, hashes.SHA256())
     )
 

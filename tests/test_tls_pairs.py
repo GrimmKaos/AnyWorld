@@ -10,6 +10,10 @@ from api import tls_bootstrap as tls
 def test_explicit_addresses_and_matching_pair():
     address, cert, key = tls.ensure_cert(["localhost", "127.0.0.1", "::1"])
     assert address == "localhost"
+    from cryptography import x509
+
+    certificate = x509.load_pem_x509_certificate(Path(cert).read_bytes())
+    assert not certificate.extensions.get_extension_for_class(x509.BasicConstraints).value.ca
     assert tls.ensure_cert(["localhost"], cert, key) == (address, cert, key)
     _, other_cert, other_key = tls.ensure_cert(["game.example"])
     assert other_cert != cert
