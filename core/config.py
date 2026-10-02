@@ -11,6 +11,7 @@ from pydantic_settings import BaseSettings, EnvSettingsSource, SettingsConfigDic
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.yaml"
+PACKAGED_CONFIG_PATH = Path(__file__).with_name("defaults.yaml")
 
 # Load local secrets before settings are created, without overwriting variables supplied
 # by the process environment. ``AD_OPENAI_API_KEY`` is consumed below only for the
@@ -34,10 +35,10 @@ class LLMConfig(BaseModel):
     tokenizer_encoding: str | None = Field(default="cl100k_base")
     model_name: str = Field(default="local", min_length=1)
     system_prompt: str = Field(min_length=1)
-    initial_output_tokens: int = Field(default=1_024, ge=64)
-    round_output_tokens: int = Field(default=2_048, ge=64)
-    dice_output_tokens: int = Field(default=512, ge=64)
-    summary_output_tokens: int = Field(default=1_024, ge=64)
+    initial_output_tokens: int = Field(default=4_096, ge=64)
+    round_output_tokens: int = Field(default=4_096, ge=64)
+    dice_output_tokens: int = Field(default=768, ge=64)
+    summary_output_tokens: int = Field(default=3_072, ge=64)
     token_safety_margin: int = Field(default=256, ge=64)
     request_timeout_seconds: float = Field(default=120.0, gt=0, le=600)
     max_retries: int = Field(default=1, ge=0, le=3)
@@ -96,14 +97,21 @@ class Settings(BaseSettings):
     server: ServerConfig = Field(default_factory=ServerConfig)
 
     @classmethod
-    def load(cls, path: str | Path = DEFAULT_CONFIG_PATH) -> "Settings":
+    def load(cls, path: str | Path | None = None) -> "Settings":
         """Load YAML, apply ``AD_`` overrides, and validate the merged settings.
 
         When the direct OpenAI provider is selected, ``AD_OPENAI_API_KEY`` is the only
         accepted API-key source. It is never written back to the configuration file or
         included in diagnostics.
         """
-        config_path = Path(path)
+        if path is not None:
+            config_path = Path(path)
+        elif os.environ.get("AD_CONFIG_PATH"):
+            config_path = Path(os.environ["AD_CONFIG_PATH"])
+        elif Path("config.yaml").is_file():
+            config_path = Path("config.yaml")
+        else:
+            config_path = PACKAGED_CONFIG_PATH
         try:
             with config_path.open("r", encoding="utf-8") as config_file:
                 raw_data: Any = yaml.safe_load(config_file)

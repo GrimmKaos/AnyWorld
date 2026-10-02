@@ -1,4 +1,8 @@
 venv/
+.venv/
+config.yaml
+dist/
+.public_games/
 .test-env/
 .test-cache/
 __pycache__/

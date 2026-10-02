@@ -55,6 +55,22 @@ llm:
     assert loaded.llm.context_window_size == 4096
 
 
+def test_configuration_discovery_preserves_local_and_explicit_files(tmp_path, monkeypatch):
+    monkeypatch.delenv("AD_CONFIG_PATH", raising=False)
+    assert Settings.load().server.host_password is None
+    local = tmp_path / "config.yaml"
+    local.write_text('llm:\n  system_prompt: "Local game."\n', encoding="utf-8")
+    assert Settings.load().llm.system_prompt == "Local game."
+    explicit = tmp_path / "operator.yaml"
+    explicit.write_text('llm:\n  system_prompt: "Explicit game."\n', encoding="utf-8")
+    monkeypatch.setenv("AD_CONFIG_PATH", str(explicit))
+    assert Settings.load().llm.system_prompt == "Explicit game."
+    assert local.read_text(encoding="utf-8").endswith('"Local game."\n')
+    monkeypatch.setenv("AD_CONFIG_PATH", str(tmp_path / "missing.yaml"))
+    with pytest.raises(ConfigLoadError, match="not found"):
+        Settings.load()
+
+
 def test_ad_environment_overrides_yaml_values(tmp_path: Path, monkeypatch) -> None:
     """Apply nested AD_ values without discarding other YAML settings."""
     config = tmp_path / "config.yaml"

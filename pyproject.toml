@@ -33,7 +33,7 @@ packages = ["api", "core", "logic"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "app.py" = "app.py"
-"config.yaml" = "config.yaml"
+"config.example.yaml" = "config.example.yaml"
 "templates" = "templates"
 "static" = "static"
 

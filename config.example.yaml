@@ -1,0 +1,14 @@
+# Copy to config.yaml or select a local file with AD_CONFIG_PATH.
+# Set AD_SERVER__HOST_PASSWORD and AD_SERVER__PLAYER_PASSWORD before launch.
+server:
+  host: "0.0.0.0"
+  port: 4141
+llm:
+  provider: "compatible"
+  endpoint: "http://localhost:8033/v1"
+  model_name: "local"
+  system_prompt: >-
+    You are the Dungeon Master of a coherent multiplayer adventure. Resolve all
+    players' attempts simultaneously using the supplied authoritative dice and
+    established facts. Keep private DM guidance and hidden checks secret; narrate
+    only observable consequences. Return the requested structured output.
