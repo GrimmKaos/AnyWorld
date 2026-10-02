@@ -59,20 +59,12 @@ class ServerConfig(BaseModel):
     host_password: str | None = Field(default=None, min_length=1)
     player_password: str | None = Field(default=None, min_length=1)
     max_players: int = Field(default=6, ge=1, le=100)
+    tls_addresses: list[str] = Field(default_factory=list)
+    tls_certfile: str | None = None
+    tls_keyfile: str | None = None
     max_pending_connections: int = Field(default=32, ge=1, le=1_000)
     auth_timeout_seconds: float = Field(default=30.0, gt=0, le=120)
     max_auth_attempts: int = Field(default=3, ge=1, le=10)
-    max_message_bytes: int = Field(default=65_536, ge=1024, le=1_048_576)
-    max_message_depth: int = Field(default=8, ge=2, le=32)
-    failed_logins_per_source: int = Field(default=30, ge=1)
-    failed_logins_global: int = Field(default=120, ge=1)
-    allowed_origins: list[str] = Field(default_factory=list)
-    allow_missing_origin: bool = False
-    trusted_proxies: list[str] = Field(default_factory=list)
-    player_messages_per_window: int = Field(default=30, ge=1)
-    player_message_window_seconds: float = Field(default=10.0, gt=0)
-    send_queue_messages: int = Field(default=128, ge=1)
-    send_queue_bytes: int = Field(default=2_097_152, ge=65_536)
     max_message_bytes: int = Field(default=65_536, ge=1024, le=1_048_576)
     max_message_depth: int = Field(default=8, ge=2, le=32)
     failed_logins_per_source: int = Field(default=30, ge=1)
@@ -90,6 +82,8 @@ class ServerConfig(BaseModel):
         """Reject a configuration where host and player passwords are equal."""
         for network in self.trusted_proxies:
             ip_network(network, strict=False)
+        if bool(self.tls_certfile) != bool(self.tls_keyfile):
+            raise ValueError("tls_certfile and tls_keyfile must be configured together")
         if (
             self.host_password is not None
             and self.player_password is not None

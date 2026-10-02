@@ -31,6 +31,14 @@ def main() -> None:
     )
     parser.add_argument("--reload", action="store_true", help="Enable development auto-reload.")
     parser.add_argument(
+        "--tls-address",
+        action="append",
+        default=None,
+        help="Certificate IP/hostname (repeatable; skips address discovery).",
+    )
+    parser.add_argument("--tls-certfile", default=settings.server.tls_certfile)
+    parser.add_argument("--tls-keyfile", default=settings.server.tls_keyfile)
+    parser.add_argument(
         "--debug-raw-responses",
         "--debug",
         action="store_true",
@@ -46,7 +54,15 @@ def main() -> None:
         level=logging.INFO,
         handlers=[ConsoleHandler()],
     )
-    ip, cert_path, key_path = ensure_cert()
+    try:
+        addresses = args.tls_address or settings.server.tls_addresses
+        if addresses or args.tls_certfile or args.tls_keyfile:
+            ip, cert_path, key_path = ensure_cert(addresses, args.tls_certfile, args.tls_keyfile)
+        else:
+            ip, cert_path, key_path = ensure_cert()
+    except (ValueError, OSError) as exc:
+        LOGGER.error("TLS configuration error: %s", exc)
+        raise SystemExit(1) from exc
     LOGGER.info("Launching Anyworld on %s:%s (https://%s:%s)", args.host, args.port, ip, args.port)
     uvicorn.run(
         "api.server:app",

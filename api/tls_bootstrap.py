@@ -4,6 +4,9 @@ import datetime
 import ipaddress
 import logging
 import socket
+import json
+import re
+from uuid import uuid4
 from pathlib import Path
 
 from cryptography import x509
@@ -34,32 +37,88 @@ def get_external_ip() -> str:
         except Exception:
             continue
     # Fallback: local interface IP (works for LAN play, not internet-facing)
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        s.connect(("1.1.1.1", 80))
-        return s.getsockname()[0]
-    finally:
-        s.close()
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as local:
+            local.connect(("1.1.1.1", 80))
+            return local.getsockname()[0]
+    except OSError:
+        try:
+            return socket.gethostbyname(socket.gethostname())
+        except OSError:
+            return "127.0.0.1"
+
+
+def _address(value: str):
+    try:
+        return x509.IPAddress(ipaddress.ip_address(value))
+    except ValueError:
+        if not re.fullmatch(r"(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?", value):
+            raise ValueError("TLS addresses must be IP addresses or ASCII hostnames.")
+        if any(
+            not part or len(part) > 63 or part.startswith("-") or part.endswith("-")
+            for part in value.split(".")
+        ):
+            raise ValueError("Invalid TLS hostname.")
+        return x509.DNSName(value.lower())
+
+
+def _validate_pair(cert_path: Path, key_path: Path, addresses: list[str]) -> None:
+    try:
+        cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
+        key = serialization.load_pem_private_key(key_path.read_bytes(), password=None)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        if cert.not_valid_before_utc > now or cert.not_valid_after_utc < now + datetime.timedelta(
+            days=REGEN_THRESHOLD_DAYS
+        ):
+            raise ValueError("TLS certificate is not currently valid or expires within 30 days.")
+
+        def public_bytes(public):
+            return public.public_bytes(
+                serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+            )
+
+        if public_bytes(cert.public_key()) != public_bytes(key.public_key()):
+            raise ValueError("TLS certificate and private key do not match.")
+        names = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+        for address in addresses:
+            requested = _address(address)
+            if requested not in names:
+                if isinstance(requested, x509.DNSName) and any(
+                    name.startswith("*.")
+                    and requested.value.split(".", 1)[-1] == name[2:]
+                    and len(requested.value.split(".")) == len(name.split("."))
+                    for name in names.get_values_for_type(x509.DNSName)
+                ):
+                    continue
+                raise ValueError("TLS certificate does not cover a requested address.")
+    except (OSError, TypeError, x509.ExtensionNotFound) as exc:
+        raise ValueError(
+            "TLS certificate/key files cannot be loaded or lack address coverage."
+        ) from exc
+
+
+def _active_paths() -> tuple[Path, Path]:
+    manifest = CERT_DIR / "active.json"
+    if manifest.exists():
+        try:
+            pair = json.loads(manifest.read_text(encoding="utf-8"))["pair"]
+            if re.fullmatch(r"pair-[0-9a-f]{32}", pair):
+                return CERT_DIR / pair / "cert.pem", CERT_DIR / pair / "key.pem"
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+    return CERT_PATH, KEY_PATH
 
 
 def _cert_covers_ip_and_is_fresh(ip: str) -> bool:
     """Return whether the existing certificate covers the IP and is not expiring soon."""
-    if not (CERT_PATH.exists() and KEY_PATH.exists()):
-        return False
-    cert = x509.load_pem_x509_certificate(CERT_PATH.read_bytes())
-    if cert.not_valid_after_utc < datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
-        days=REGEN_THRESHOLD_DAYS
-    ):
-        return False
     try:
-        san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
-        ips_in_cert = san.get_values_for_type(x509.IPAddress)
-        return ipaddress.ip_address(ip) in ips_in_cert
-    except x509.ExtensionNotFound:
+        _validate_pair(*_active_paths(), [ip])
+        return True
+    except ValueError:
         return False
 
 
-def _generate_cert(ip: str) -> None:
+def _generate_cert(ip: str, addresses: list[str] | None = None) -> tuple[Path, Path]:
     """Generate a self-signed certificate and key covering the given IP."""
     CERT_DIR.mkdir(exist_ok=True)
 
@@ -71,10 +130,11 @@ def _generate_cert(ip: str) -> None:
         ]
     )
 
-    san_entries = [
-        x509.IPAddress(ipaddress.ip_address(ip)),
-        x509.IPAddress(ipaddress.ip_address("127.0.0.1")),
-    ]
+    san_entries = list(
+        dict.fromkeys(
+            _address(value) for value in [*(addresses or [ip]), "127.0.0.1", "::1", "localhost"]
+        )
+    )
 
     cert = (
         x509.CertificateBuilder()
@@ -91,25 +151,55 @@ def _generate_cert(ip: str) -> None:
         .sign(key, hashes.SHA256())
     )
 
-    KEY_PATH.write_bytes(
-        key.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=serialization.NoEncryption(),
+    pair_name = "pair-" + uuid4().hex
+    pair_dir = CERT_DIR / pair_name
+    pair_dir.mkdir()
+    cert_path, key_path = pair_dir / "cert.pem", pair_dir / "key.pem"
+    pointer = CERT_DIR / (pair_name + ".tmp")
+    try:
+        key_path.write_bytes(
+            key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption(),
+            )
         )
-    )
-    CERT_PATH.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+        key_path.chmod(0o600)
+        cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+        _validate_pair(cert_path, key_path, addresses or [ip])
+        pointer.write_text(json.dumps({"pair": pair_name}), encoding="utf-8")
+        pointer.replace(CERT_DIR / "active.json")
+    except BaseException:
+        pointer.unlink(missing_ok=True)
+        cert_path.unlink(missing_ok=True)
+        key_path.unlink(missing_ok=True)
+        pair_dir.rmdir()
+        raise
+    return cert_path, key_path
 
 
-def ensure_cert() -> tuple[str, str, str]:
+def ensure_cert(
+    addresses: list[str] | None = None, cert_path: str | None = None, key_path: str | None = None
+) -> tuple[str, str, str]:
     """Returns (external_ip, cert_path, key_path), regenerating the cert if needed."""
-    ip = get_external_ip()
-    if not _cert_covers_ip_and_is_fresh(ip):
+    addresses = list(dict.fromkeys(addresses or [get_external_ip()]))
+    for value in addresses:
+        _address(value)
+    ip = addresses[0]
+    if bool(cert_path) != bool(key_path):
+        raise ValueError("Supply both TLS certificate and key paths.")
+    if cert_path and key_path:
+        _validate_pair(Path(cert_path), Path(key_path), addresses)
+        return ip, cert_path, key_path
+    cert, key = _active_paths()
+    try:
+        _validate_pair(cert, key, addresses)
+    except ValueError:
         logger.info(
             "TLS certificate for %s is missing, expiring soon, or does not cover the IP; renewing",
             ip,
         )
-        _generate_cert(ip)
+        cert, key = _generate_cert(ip, addresses)
     else:
         logger.debug("TLS certificate is valid for %s", ip)
-    return ip, str(CERT_PATH), str(KEY_PATH)
+    return ip, str(cert), str(key)
