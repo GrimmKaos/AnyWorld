@@ -372,7 +372,7 @@ class GameEngine(LobbyMixin):
                 if actions is not None:
                     self._launch_round_locked(actions)
             LOGGER.info(
-                "Player action accepted round=%d player=%s",
+                "Player action accepted round=%d player=%r",
                 action_event.payload["round_number"],
                 action_event.payload["player_name"],
             )

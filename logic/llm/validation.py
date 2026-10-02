@@ -6,7 +6,7 @@ from html import unescape
 
 from pydantic import BaseModel
 
-from core.schemas import ContextSummary, DicePlan, RoundResolution
+from core.schemas import ContextSummary, DicePlan, RoundResolution, ChanceEventResult
 from .errors import LLMResolutionError
 from logic.dice import non_percentage_guidance_lines
 
@@ -74,6 +74,7 @@ def check_public_output(
     private_rolls: dict[str, int],
     guidance: str,
     public_rolls: dict[str, int] | None = None,
+    private_events: list[ChanceEventResult] | None = None,
 ) -> None:
     """Reject direct guidance echoes and explicit hidden dice disclosures.
 
@@ -84,6 +85,26 @@ def check_public_output(
     text = " ".join([result.global_narrative, *result.player_resolutions.values()])
     normalized = " ".join(text.casefold().split())
     fragments = re.split(r"[.!?\n]+", guidance)
+    secret_literals = re.findall(
+        r"(?:password|passphrase|secret(?:\s+(?:code|word))?|pin|token|salainen\s+tunnus|"
+        r"秘密の合言葉|秘密口令)\s*(?:is|=|:|on|は|是)\s*[\"']?([^\s\"'.,;!?]+)",
+        guidance,
+        re.IGNORECASE,
+    )
+    if any(
+        re.search(
+            (
+                re.escape(value.casefold())
+                if re.search(r"[\u3040-\u30ff\u3400-\u9fff]", value)
+                else r"(?<!\w)" + re.escape(value.casefold()) + r"(?!\w)"
+            ),
+            normalized,
+        )
+        for value in secret_literals
+    ):
+        raise LLMResolutionError(
+            "Model output disclosed a named private secret; no result committed."
+        )
     if any(
         len(fragment.strip()) >= 4
         and re.search(
@@ -103,6 +124,9 @@ def check_public_output(
             rf"\b(?:rolled?|check|d100|dice)\b[^.!?\n]{{0,80}}\b{value}\b", text, re.IGNORECASE
         ) or re.search(rf"\b{value}\s*/\s*100\b", text):
             raise LLMResolutionError("Model output disclosed a private check; no result committed.")
+    for event in private_events or []:
+        if re.search(rf"\b{event.event.chance_percent}\s*(?:%|percent\b)", text, re.IGNORECASE):
+            raise LLMResolutionError("Model output disclosed a private event probability.")
 
 
 def normalize_hidden_roll_sources(plan: DicePlan, guidance: str) -> DicePlan:
@@ -121,7 +145,7 @@ def normalize_hidden_roll_sources(plan: DicePlan, guidance: str) -> DicePlan:
             sources[name] = valid_sources[normalized]
         else:
             logger.info(
-                "Treating unsupported hidden classification for %s as a public action roll",
+                "Treating unsupported hidden classification for %r as a public action roll",
                 name,
             )
     return plan.model_copy(update={"hidden_rolls": hidden, "hidden_roll_sources": sources})

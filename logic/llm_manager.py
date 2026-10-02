@@ -3,7 +3,6 @@
 import asyncio
 import json
 import logging
-import re
 from time import perf_counter
 from typing import Any
 
@@ -537,24 +536,9 @@ class LLMContextManager:
                     checks.update(
                         {f"event-{i}": event.roll for i, event in enumerate(private_events or [])}
                     )
-                    check_public_output(result, checks, self.private_guidance, public_rolls)
-                    if private_events:
-                        public_text = " ".join(
-                            [
-                                result.global_narrative,
-                                *result.player_resolutions.values(),
-                            ]
-                        )
-                        for event in private_events:
-                            probability = re.escape(str(event.event.chance_percent))
-                            if re.search(
-                                rf"\b{probability}\s*(?:%|percent\b)",
-                                public_text,
-                                re.IGNORECASE,
-                            ):
-                                raise LLMResolutionError(
-                                    "Model output disclosed a private event probability."
-                                )
+                    check_public_output(
+                        result, checks, self.private_guidance, public_rolls, private_events
+                    )
                     if opening_names is not None and any(
                         name.casefold() not in result.global_narrative.casefold()
                         for name in opening_names

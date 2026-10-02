@@ -46,7 +46,7 @@ async def classify_hidden_checks(
         if verdict.preserved:
             hidden.append(name)
         else:
-            logger.info("Rejected private source for %s; retaining public action check", name)
+            logger.info("Rejected private source for %r; retaining public action check", name)
     return plan.model_copy(
         update={
             "hidden_rolls": hidden,
