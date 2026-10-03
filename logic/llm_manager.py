@@ -274,13 +274,13 @@ class LLMContextManager:
         prompt, schema = self._build_round_request(
             RequestKind.CHANCE_TRIGGER, round_buffer, current_state
         )
-        result = await self._request(
-            prompt,
-            schema,
-            remember=False,
-            include_history=False,
-            kind="chance_trigger",
-        )
+        with self.budget.chance_participants(round_buffer):
+            result = await self._request(
+                prompt,
+                schema,
+                remember=False,
+                kind="chance_trigger",
+            )
         names = {name.casefold(): name for name in round_buffer}
         matched = []
         for value in result.occurrences:
@@ -442,14 +442,15 @@ class LLMContextManager:
             prompt = prompts.prepare_request_prompt(
                 prompt, issubclass(schema, RoundResolution), self.private_guidance
             )
-            count = await self.budget.input_tokens(
-                [*self._fixed_messages(kind), prompt], schema, kind
-            )
-            if not self.budget.fits(count, kind):
-                raise LLMResolutionError(
-                    "Scenario, durable memory and combined actions exceed the context budget. "
-                    "Shorten the action or use a larger backend context."
+            with self.budget.chance_participants(actions):
+                count = await self.budget.input_tokens(
+                    [*self._fixed_messages(kind), prompt], schema, kind
                 )
+                if not self.budget.fits(count, kind):
+                    raise LLMResolutionError(
+                        "Scenario, durable memory and combined actions exceed the context budget. "
+                        "Shorten the action or use a larger backend context."
+                    )
 
     async def _request(
         self,

@@ -13,6 +13,7 @@ from logic.llm.auditing import classify_hidden_checks
 from logic.llm.errors import LLMResolutionError
 from logic.llm import prompts
 from logic.llm_manager import LLMContextManager, participant_schema
+from logic import llm_manager
 from test_priority_one_llm import FakeClient
 
 
@@ -24,11 +25,18 @@ def test_client_ignores_inherited_organization_and_project(monkeypatch, provider
     settings.llm.provider = provider
     requests = []
 
-    async def send(client, request, **kwargs):
+    def send(request):
         requests.append(request)
         return httpx.Response(200, json={"object": "list", "data": []}, request=request)
 
-    monkeypatch.setattr(httpx.AsyncClient, "send", send)
+    sdk_client = llm_manager.AsyncOpenAI
+
+    class ClientWithTransport(sdk_client):
+        def __init__(self, **options):
+            options["http_client"] = httpx.AsyncClient(transport=httpx.MockTransport(send))
+            super().__init__(**options)
+
+    monkeypatch.setattr(llm_manager, "AsyncOpenAI", ClientWithTransport)
 
     async def run():
         manager = LLMContextManager()

@@ -19,6 +19,7 @@ from .response_schemas import schema_text
 # Both providers count hidden reasoning within the completion cap.
 _THINKING_OUTPUT_BUDGETS = {"none": 0, "low": 2_048, "medium": 4_096, "high": 8_192}
 _LOCAL_ONLY = ContextVar("local_token_estimates", default=False)
+_CHANCE_OUTPUT_CAP = ContextVar("chance_output_cap", default=0)
 _NO_THINKING_KINDS = frozenset(
     {
         "title",
@@ -69,12 +70,24 @@ class TokenBudget:
         """Return the configured output token cap for a request kind."""
         if kind == "title":
             return min(128, settings.llm.initial_output_tokens)
+        if kind == "chance_trigger":
+            return max(settings.llm.dice_output_tokens, _CHANCE_OUTPUT_CAP.get())
         cap_kind = (
             "summary"
             if kind in {"summary_audit", "event_audit", "dice_audit"}
             else "dice" if kind in {"chance_rule", "chance_trigger"} else kind
         )
         return getattr(settings.llm, f"{cap_kind}_output_tokens")
+
+    @contextmanager
+    def chance_participants(self, names):
+        """Reserve the focused reply for the actual party, in this task only."""
+        reply = json.dumps({"occurrences": list(names)}, ensure_ascii=True)
+        token = _CHANCE_OUTPUT_CAP.set(self.count_tokens(reply) + 64)
+        try:
+            yield
+        finally:
+            _CHANCE_OUTPUT_CAP.reset(token)
 
     @staticmethod
     def reasoning_effort(kind: str = "round") -> str:
