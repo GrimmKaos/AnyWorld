@@ -20,6 +20,8 @@ function storage() {
 // Run the real client script with isolated browser surfaces; no server or inference.
 function browser(localStorage = storage(), sessionStorage = storage()) {
     const nodes = new Map();
+    const downloads = [];
+    const blobs = [];
     function node(id) {
         if (!nodes.has(id)) nodes.set(id, {
             hidden: id === "grid-container", disabled: false, value: "", textContent: "",
@@ -29,6 +31,7 @@ function browser(localStorage = storage(), sessionStorage = storage()) {
             querySelector() { return node("button"); },
             querySelectorAll() { return []; },
             append() {}, appendChild() {}, replaceChildren() {}, focus() {}, after() {},
+            click() { downloads.push({ href: this.href, download: this.download }); },
             setAttribute() {}, getClientRects() { return [1]; }, contains() { return false; },
         });
         return nodes.get(id);
@@ -63,7 +66,8 @@ function browser(localStorage = storage(), sessionStorage = storage()) {
         crypto: { randomUUID }, localStorage, sessionStorage, setTimeout,
     };
     const runtime = {
-        window, sessionStorage, WebSocket: Socket, setTimeout, clearTimeout, console,
+        window, sessionStorage, WebSocket: Socket, setTimeout, clearTimeout, console, Blob,
+        URL: { createObjectURL(blob) { blobs.push(blob); return "blob:test"; }, revokeObjectURL() {} },
         MutationObserver: class { observe() {} },
         document: { getElementById: node, createElement: node, listeners: {},
             createDocumentFragment: () => node("fragment"),
@@ -71,7 +75,14 @@ function browser(localStorage = storage(), sessionStorage = storage()) {
     };
     vm.runInNewContext(source, runtime);
     return {
-        runtime,
+        runtime, downloads, blobs,
+        session: vm.runInNewContext("clientSession", runtime),
+        runTimer(delay) {
+            const found = [...timers.entries()].find(([, timer]) => timer.delay === delay);
+            assert.ok(found, `Expected a timer at ${delay} ms`);
+            timers.delete(found[0]);
+            found[1].callback();
+        },
         sockets, node, localStorage, sessionStorage, hash: runtime.fallbackSha256,
         async login(name = "Arxs", password = "party-password") {
             node("name-input").value = name;
@@ -359,4 +370,75 @@ test("scenario validation errors remain visible in the host form", async () => {
     assert.equal(tab.node("host-status").textContent,
         "Freeform DM guidance cannot contain percentage events.");
     assert.equal(tab.node("scenario-form").querySelector().disabled, false);
+});
+
+
+for (const mode of ["replay", "export"]) {
+    test(`${mode} resumes a rejected page beyond 3100 events and restores controls`, async () => {
+        const tab = await joined();
+        const socket = tab.sockets[0];
+        let rendered = 0;
+        tab.runtime.appendText = () => { rendered++; return { dataset: {} }; };
+        socket.receive("auth_ok", { name: "Arxs", reconnect_token: "private-token",
+            state: "ACTIVE_TURN", session_id: "long-session", latest_event_id: mode === "replay" ? 3101 : 0,
+            players: [], player_order: [] });
+        if (mode === "export") {
+            tab.session.cursor = 3101;
+            tab.node("history-export").listeners.click();
+        }
+        function page(after, end) {
+            socket.receive("journal_page", { session_id: "long-session", mode, cursor: end,
+                latest_event_id: 3101, has_more: end < 3101, events: Array.from({ length: end - after },
+                    (_, index) => ({ type: "chat_echo", payload: { session_id: "long-session",
+                        event_id: after + index + 1, name: "Arxs", chat: "Archived" } })) });
+        }
+        for (let after = 0; after < 3000; after += 100) page(after, after + 100);
+        const request = socket.sent.at(-1).data;
+        assert.equal(request.after, 3000);
+        socket.receive("error", { code: "journal_rate_limited", request, retry_after_seconds: 10,
+            msg: "Message rate exceeded; please wait." });
+        const before = socket.sent.length;
+        if (mode === "replay") {
+            socket.receive("chat_echo", { session_id: "long-session", event_id: 3102,
+                name: "Arxs", chat: "Live" });
+            assert.equal(tab.session.liveEvents.length, 1);
+            assert.equal(tab.session.replaying, true);
+        }
+        tab.runTimer(10050);
+        assert.equal(socket.sent.length, before + 1);
+        assert.deepEqual(socket.sent.at(-1).data, request);
+        page(3000, 3100);
+        page(3100, 3101);
+        if (mode === "replay") {
+            assert.equal(tab.session.replaying, false);
+            assert.equal(tab.session.liveEvents.length, 0);
+            assert.equal(rendered, 3102);
+        } else {
+            assert.equal(tab.node("history-export").disabled, false);
+            assert.equal(tab.downloads.length, 1);
+            const events = (await tab.blobs[0].text()).trim().split("\n").map(JSON.parse);
+            assert.equal(events.length, 3101);
+            assert.equal(events.at(-1).payload.event_id, 3101);
+        }
+    });
+}
+
+test("failed or disconnected history operations release buffers and controls", async () => {
+    const tab = await joined();
+    const socket = tab.sockets[0];
+    socket.receive("auth_ok", { name: "Arxs", reconnect_token: "private-token",
+        state: "ACTIVE_TURN", session_id: "session-a", latest_event_id: 1,
+        players: [], player_order: [] });
+    const replayRequest = socket.sent.at(-1).data;
+    socket.receive("error", { code: "journal_request_failed", request: replayRequest, msg: "History failed" });
+    assert.equal(tab.session.replaying, false);
+    tab.node("history-export").listeners.click();
+    const exportRequest = socket.sent.at(-1).data;
+    socket.receive("error", { code: "journal_request_failed", request: exportRequest, msg: "History failed" });
+    assert.equal(tab.node("history-export").disabled, false);
+    tab.node("history-export").listeners.click();
+    assert.equal(tab.node("history-export").disabled, true);
+    socket.close();
+    assert.equal(tab.node("history-export").disabled, false);
+    assert.equal(tab.session.exportEvents.length, 0);
 });

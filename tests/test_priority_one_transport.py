@@ -216,3 +216,64 @@ def test_active_game_reconnect_restores_original_player_with_private_proof(rejoi
                     assert app.state.engine.players[identity].is_connected
                     recovered.send_json({"event_type": "chat", "data": {"message": "I'm back"}})
                     assert receive_until(recovered, "chat_echo")["payload"]["name"] == name
+
+
+@pytest.mark.parametrize("mode", ["replay", "export"])
+def test_long_history_has_independent_budget_and_retriable_page(monkeypatch, mode):
+    from api import admission
+
+    now = [100.0]
+    monkeypatch.setattr(admission, "monotonic", lambda: now[0])
+    app = create_app(FakeResolver)
+    host_id = str(uuid4())
+    with TestClient(app) as client:
+        with client.websocket_connect(f"/ws/{host_id}") as host:
+            authenticate(host, host_id)
+            receive_until(host, "auth_ok")
+            for number in range(30):
+                host.send_json({"event_type": "chat", "data": {"message": f"Chat {number}"}})
+                receive_until(host, "chat_echo")
+            journal = app.state.engine.journal
+            # Seed the remaining archive in one batch; all gateway traffic still
+            # travels through the real ASGI socket and admission policy.
+            events = tuple(
+                ServerEvent(
+                    type="chat_echo",
+                    payload={
+                        "chat": f"Archived {number}",
+                        "session_id": journal.session_id,
+                        "event_id": number,
+                    },
+                )
+                for number in range(journal.cursor + 1, 3102)
+            )
+            journal._append_batch(events)
+            journal.cursor = 3101
+            cursor = 0
+            received = []
+            for _ in range(30):
+                data = {"mode": mode, "after": cursor, "limit": 100, "search": ""}
+                host.send_json({"event_type": "journal_request", "data": data})
+                page = receive_until(host, "journal_page")["payload"]
+                assert not page["incomplete"]
+                received.extend(page["events"])
+                cursor = page["cursor"]
+            assert cursor == 3000
+            data["after"] = cursor
+            host.send_json({"event_type": "journal_request", "data": data})
+            error = receive_until(host, "error")["payload"]
+            assert error["code"] == "journal_rate_limited"
+            assert error["request"] == data and error["retry_after_seconds"] == 10.0
+            now[0] += error["retry_after_seconds"] + 0.1
+            while True:
+                data["after"] = cursor
+                host.send_json({"event_type": "journal_request", "data": data})
+                page = receive_until(host, "journal_page")["payload"]
+                received.extend(page["events"])
+                cursor = page["cursor"]
+                if not page["has_more"]:
+                    break
+            assert cursor == 3101
+            assert [event["payload"]["event_id"] for event in received] == list(range(1, 3102))
+            host.send_json({"event_type": "chat", "data": {"message": "Still connected"}})
+            assert receive_until(host, "chat_echo")["payload"]["chat"] == "Still connected"

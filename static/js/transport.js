@@ -13,6 +13,7 @@ function send(eventType, data) {
 }
 
 function connectSocket() {
+    resetJournalRequests();
     clearTimeout(clientSession.reconnectTimer);
     clearTimeout(clientSession.connectionTimer);
     const previous = clientSession.ws;
@@ -46,6 +47,7 @@ function connectSocket() {
         if (clientSession.ws !== socket) return;
         clearTimeout(clientSession.connectionTimer);
         clientSession.authenticated = false;
+        resetJournalRequests();
         elements.connectionStatus.textContent = "Reconnecting...";
         elements.actionInput.disabled = true;
         elements.chatInput.disabled = true;
