@@ -206,10 +206,40 @@ Existing history/benchmark observations are retained and were not independently 
   - Priority conclusion: demoted from P2 to P3. Default caching already yields substantial reuse and estimated savings, so no immediate cache-control change is justified. Revisit if real player idle intervals, cold/expired-cache behavior, or production cost data show a gap. The round-17 compaction failure is a separate memory/reliability concern, not evidence that cache controls need tuning.
 
 - [ ] **P3 - Support multiple sessions and host reset** - Isolate engines, resolvers, credentials, transcripts and cancellation before adding workers/reset. Retains earlier repository backlog intent.
-- [ ] **P3 - Evaluate multilingual play** - Retains earlier translation backlog intent; assess coherence and token budgets rather than assuming a model class is required.
+- [ ] **P3 - Evaluate multilingual play** - OpenAI prompts already follow the scenario's language;
+  compatible-provider prompts currently request English. Broader language support and multilingual
+  coherence/token-budget evaluation remain open rather than assuming a model class is required.
 - [ ] **P3 - Version static assets reproducibly** - Replace manual ?v= values with content/build hashes and suitable cache headers so unchanged assets stay cached and edits invalidate reliably.
 
 ## Done
+
+- [x] ~~P1 - Restore browser WebSocket routing and refresh cached scripts~~ (2026-10-03)
+  - Corrected the accidental `clientSession.ws` substitutions in the protocol and URL path:
+    HTTP uses `ws`, HTTPS uses `wss`, and both connect to `/ws/{client_id}`. The old path
+    caused 403 handshake rejections. Bumped script URLs from `recovery-1` to `recovery-2`.
+  - Added the expected HTTPS socket URL to the existing reconnect regression test.
+
+- [x] ~~P2 - Make scenario creation fit the viewport and pair labels with fields~~ (2026-10-03)
+  - Widened the host card from 36rem to a viewport-bounded 48rem. Grouped chance labels above
+    their own controls in two columns, stacking at <=700px; controls shrink and previews wrap.
+  - Bumped stylesheet version from 14 to 15. Backend asset-serving and client tests passed;
+    no rendered desktop/mobile browser layout verification was performed.
+
+- [x] ~~P2 - Clarify supported password environment overrides~~ (2026-10-03)
+  - Launch validation now mentions `AD_SERVER__HOST_PASSWORD` and
+    `AD_SERVER__PLAYER_PASSWORD` alongside YAML. Regression coverage verifies both override
+    YAML values. README.md explains `.env`/process precedence and the manual config template.
+
+- [x] ~~P1 - Ignore inherited OpenAI organization/project settings on game clients~~ (2026-10-03)
+  - SDK clients clear organization/project after construction, preventing unrelated
+    `OPENAI_ORG_ID` and `OPENAI_PROJECT_ID` from causing 401 responses with the game's key.
+    The process environment remains intact and the configured API key is unchanged.
+  - Offline request-header regressions cover both direct OpenAI and compatible providers.
+    Before implementation, a user-authorized direct title request using the game call path
+    succeeded with `gpt-5.6-luna`; the user confirmed clearing shell organization/project
+    variables resolved the game failure. No live post-fix inference or benchmark was run.
+  - Final code validation: 338 Python tests and 21 Node client tests passed; Black and Flake8
+    passed. The Python suite reported the existing Starlette/httpx deprecation warning.
 
 - [x] ~~P2 - Use only `AD_OPENAI_API_KEY` for direct OpenAI credentials (Q03)~~ (2026-09-29) - core/config.py; INSTALL.md.
   - Direct OpenAI configuration now ignores the legacy `OPENAI_API_KEY` name, YAML `api_key`, and

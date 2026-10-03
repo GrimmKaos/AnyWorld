@@ -25,6 +25,14 @@ automatically approved product changes. Proposed fixes belong in TASKS.md.
   provider (`compatible`/`openai`), tokenizer_encoding, system_prompt and shared
   `reasoning_effort`. Compatible `/props`
   discovery overrides context_window_size when successful. Server passwords must be distinct.
+  Settings merge `AD_` environment overrides over YAML, using `__` for nested fields;
+  `AD_SERVER__HOST_PASSWORD` and `AD_SERVER__PLAYER_PASSWORD` override YAML credentials.
+  Project `.env` values load without overwriting process variables. Direct OpenAI uses only
+  `AD_OPENAI_API_KEY`; `config.example.yaml` is a manual template, not an automatic source.
+- `LLMContextManager._create_client()` clears SDK organization/project after construction so
+  inherited `OPENAI_ORG_ID` and `OPENAI_PROJECT_ID` do not scope game requests. Passing None to
+  the SDK constructor alone still reads these variables. Leave the process environment unchanged.
+  OpenAI narration follows the scenario's language; compatible-provider narration requests English.
 - `api/server.py` owns GET /, /static, /ws/{client_id}, ConnectionManager and an engine/resolver
   per ASGI lifespan. Lifespan validates passwords and closes sockets, tasks and clients.
   Client IDs must be canonical UUIDs. No multi-session or multi-worker coordination exists.
@@ -33,37 +41,42 @@ automatically approved product changes. Proposed fixes belong in TASKS.md.
   `logic/engine.py` owns the lock, turn deque, action buffer and round orchestration.
 - `logic/validation.py` validates text; `logic/presentation.py` normalizes player outcome names.
 - `logic/dice.py` validates the dedicated chance-event field and combines it with freeform private
-  guidance; percentage rolls remain server-authoritative and private. Per-round rules are
-  synthesized by Python, while the LLM identifies occurrences only for conditional rules.
+  guidance; percentage rolls remain server-authoritative and private. Unqualified per-round
+  checks are synthesized by Python; conditional triggers and optional eligibility use a focused
+  LLM pass. Cadence, eligibility and shared/per-player scope are independent settings.
   Planning audits run only for conditional triggers or hidden action checks, before any rolls;
   server-generated per-round checks are excluded. Hidden sources use schema-constrained guidance
   lines. A hidden label without a valid non-percentage guidance source is normalized to public
   while preserving the planned action roll, avoiding a retry loop over privacy classification.
 - Host authentication precedes scenario setup. `generate_scenario_title()` returns only a title
   through ScenarioTitle; it does not remember narrative. Joining players see the host-typed prompt.
-  Scenario setup accepts one optional single-line whole-number percentage event in `chance_event`
-  (0–100%, either per-round or conditional) plus separate freeform `guidance`; percentage rules
-  in freeform guidance are rejected, so at most one percentage event exists per game. The two
-  fields are combined into the resolver's private context after validation.
+  Scenario setup accepts one optional `StructuredChanceRule` in `chance_rule` or legacy text in
+  `chance_event`, plus separate freeform `guidance`. The structured rule has percentage (0–100),
+  cadence, trigger, eligibility, effect and scope. Conditional cadence requires a trigger;
+  per-round cadence forbids one. Legacy text must specify unambiguous timing. Both forms cannot
+  be used together; percentage rules in freeform guidance are rejected, preserving one event
+  per game. The rule is serialized into the resolver's private context after validation.
   Start Game calls `generate_start_state()` with joined names and broadcasts the generated opening.
   Missing player names are rejected; role, goal, and prose coherence remain prompt instructions.
   Setting-conflicting attempts may receive a public difficulty roll when their outcome is
   uncertain; they are not rejected solely because the requested target seems impossible.
   No generation occurs just because a player joins.
 - Client envelope: event_type plus object data. Events: auth, chat, action, scenario_init,
-  start_game, end_game, retry_round. Auth sends name and SHA-256 password_digest of password +
-  client ID. Reauthentication additionally requires the private reconnect_token from auth_ok,
+  start_game, end_game, retry_round, journal_request. Auth sends name and SHA-256 password_digest
+  of password + client ID. Reauthentication additionally requires the private reconnect_token from auth_ok,
   retained in browser sessionStorage. The ID/token pair is also saved per name in localStorage
   for recovery after re-entering name/password at the same origin; passwords/digests are not stored
   there. Pending sockets cannot subscribe, replace a player or act.
 - Server envelope: type plus object payload. Types: state_update, chat_echo, turn_directive,
   error, system_msg, auth_ok, scenario_ready, round_start, action_echo, player_roster,
-  dm_thinking, game_ended, token_usage. Turn directives use active_player_id.
+  dm_thinking, game_ended, token_usage, journal_page, action_accepted.
+  Turn directives use active_player_id.
 - `core/schemas.py`: RoundResolution player_resolutions keys must be exact player names; runtime
   validation rejects other keys. ScenarioTitle contains only title. DicePlan has rolls and hidden_rolls.
   ContextSummary has world_state, player_states, important_npcs and unresolved_threads. Models forbid extra fields and coercion.
-- `logic/dice.py` generates integers 0..100 inclusive. Do not silently change the probability
-  distribution.
+- `logic/dice.py` action dice use integers 0..100 inclusive. Percentage-event dice use 1..100
+  inclusive and succeed at roll <= chance_percent, giving exact 0% and 100% boundaries.
+  Do not silently change either probability distribution.
 - Disconnected players get idle actions when progression is possible; departure/return annotations
   inform the LLM, and persistently absent players are omitted from later outcomes.
 - `logic/transcript.py` writes escaped HTML under .logged_games/YYYY-MM-DD-title[-suffix].html,
@@ -71,6 +84,10 @@ automatically approved product changes. Proposed fixes belong in TASKS.md.
   Original scenario prompt and Opening scenario are separate sections; private guidance and hidden
   checks are included. Token usage is broadcast to all after rounds.
   Writes/finalization are serialized; cancellation waits for outstanding file writes.
+- `logic/journal.py` keeps a separate allowlisted public JSONL journal under `.public_games/`,
+  with session IDs and event cursors for reconnect replay, paginated history, search and export.
+  It excludes private guidance/rolls. Archive failures retain bounded pending events; clients
+  receive an incomplete-history indicator when recovery cannot provide the complete archive.
 - Inference runs as an owned task outside socket receive loops. Generation IDs prevent stale
   commits. LLM round failures receive up to two automatic retries within the existing job deadline,
   reusing pending actions/dice. Exhausted failures pause; the host can retry or end. Reconnection
@@ -82,8 +99,10 @@ Requests contain system prompt, fixed scenario/private guidance, separate durabl
 history and current input. Dice planning receives the same authoritative context plus the public
 state. Compaction budgets the upcoming request and merges older rounds into memory transactionally;
 failed, empty or expanding summaries preserve the original context. There is no FIFO-forget fallback.
-Normally there are two inference calls per round. Compaction adds a summary and a separate fact
-audit; rejected summaries or audits preserve original memory. Tokenizer HTTP calls are not inference.
+Rounds use dice planning and narrative resolution; conditional chance triggers or eligibility
+can add a focused trigger pass, and hidden/conditional planning may require audits.
+Compaction adds a summary and a separate fact audit; rejected summaries or audits preserve
+original memory. Tokenizer HTTP calls are not inference.
 
 Every generation has a configured output cap, schema/framing allowance and safety margin. llama.cpp
 uses /apply-template and /tokenize when available; OpenAI uses a matching known tiktoken encoding.
@@ -95,8 +114,8 @@ are available. Summary requests are also bounded. Direct private-guidance echoes
 hidden-dice disclosures are rejected before remembering output;
 this guard cannot prove arbitrary paraphrases secret-free. No application cache routing exists.
 
-Optional llm settings: initial_output_tokens (1024), round_output_tokens (2048), dice_output_tokens
-(512), summary_output_tokens (1024), token_safety_margin (256), request_timeout_seconds (120.0),
+Optional llm settings: initial_output_tokens (4096), round_output_tokens (4096), dice_output_tokens
+(768), summary_output_tokens (3072), token_safety_margin (256), request_timeout_seconds (120.0),
 max_retries (1), reasoning_effort (none/low/medium/high),
 debug_raw_responses (false),
 compaction_target_fraction (0.75), history_round_limit (null). Title generation caps output at
@@ -134,9 +153,14 @@ can include secrets and are not automatically rotated. See INSTALL.md for launch
 
 Current desktop columns are 20% chat / 80% game, with 3% title / 92% combined log / 5% input rows.
 Mobile <=700px stacks title/log/chat/input. The log is capped at 500 DOM entries (chat at 300),
-and snapshots do not replay full history. Host-typed scenario prompt precedes the generated
-Opening scenario. The host form has separate optional fields for one percentage event and freeform
-DM guidance. Snapshots retain the opening separately from the latest round state.
+and snapshots retain the opening separately from the latest round state. Reconnect catch-up uses
+public journal cursors rather than embedding full history in snapshots; History provides search
+and JSONL export. Host-typed scenario prompt precedes the generated Opening scenario.
+The host card is min(48rem, 100%) wide, with chance-control labels above their own inputs in
+two columns, stacking into one column at <=700px. Inputs can shrink and the private rule preview
+wraps. Freeform DM guidance remains separate. Script/CSS URLs use manual cache versions in
+`templates/index.html`; bump the relevant version when changing an asset. The client uses
+ws/wss according to page protocol and the fixed `/ws/{client_id}` route.
 
 For normal implementation work: `black --check app.py api core logic tests`,
 `flake8 app.py api core logic tests`, and `pytest`. Use fake resolvers and temporary transcripts.
