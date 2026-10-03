@@ -15,6 +15,7 @@ from pydantic import ValidationError
 from core.config import settings
 from core.schemas import ClientPayload, ServerEvent, validate_client_data
 from api.admission import WindowBudget, receive_payload, origin_allowed, source_address
+from api.windows_asyncio import install_windows_socket_cleanup
 from logic.engine import GameEngine
 from logic.llm_manager import LLMContextManager
 
@@ -173,6 +174,7 @@ def create_app(resolver_factory=LLMContextManager) -> FastAPI:
     async def lifespan(application: FastAPI):
         """Validate passwords and manage engine/manager startup and shutdown."""
         settings.server.validate_passwords()
+        install_windows_socket_cleanup()
         manager = ConnectionManager()
         engine = GameEngine(manager, resolver_factory())
 
@@ -192,6 +194,7 @@ def create_app(resolver_factory=LLMContextManager) -> FastAPI:
             settings.server.player_messages_per_window,
             settings.server.player_message_window_seconds,
         )
+        application.state.history_messages = WindowBudget(30, 10)
         application.state.manager = manager
         application.state.engine = engine
         try:
@@ -238,6 +241,7 @@ def create_app(resolver_factory=LLMContextManager) -> FastAPI:
         authenticated = False
         try:
             while True:
+                raw_payload = None
                 try:
                     if not authenticated:
                         attempts += 1
@@ -247,8 +251,29 @@ def create_app(resolver_factory=LLMContextManager) -> FastAPI:
                         raw_payload = await receive_payload(websocket)
                         if not manager.owns(client_id, websocket):
                             break
-                        if not websocket.app.state.player_messages.accept(client_id):
-                            raise ValueError("Message rate exceeded; please wait.")
+                        # History has its own bounded budget so catch-up/export cannot
+                        # consume the player's chat/action allowance.
+                        history = (
+                            isinstance(raw_payload, dict)
+                            and raw_payload.get("event_type") == "journal_request"
+                        )
+                        budget = (
+                            websocket.app.state.history_messages
+                            if history
+                            else websocket.app.state.player_messages
+                        )
+                        if not budget.accept(client_id):
+                            error = {"msg": "Message rate exceeded; please wait."}
+                            if history:
+                                error.update(
+                                    code="journal_rate_limited",
+                                    retry_after_seconds=budget.retry_after(client_id),
+                                    request=raw_payload.get("data", {}),
+                                )
+                            await manager.send_socket(
+                                websocket, ServerEvent(type="error", payload=error)
+                            )
+                            continue
                     payload = ClientPayload.model_validate(raw_payload)
                     validate_client_data(payload)
                     if not authenticated:
@@ -283,9 +308,16 @@ def create_app(resolver_factory=LLMContextManager) -> FastAPI:
                     message = (
                         "Invalid message schema." if isinstance(exc, ValidationError) else str(exc)
                     )
-                    await manager.send_socket(
-                        websocket, ServerEvent(type="error", payload={"msg": message})
-                    )
+                    error = {"msg": message}
+                    if (
+                        authenticated
+                        and isinstance(raw_payload, dict)
+                        and raw_payload.get("event_type") == "journal_request"
+                    ):
+                        error.update(
+                            code="journal_request_failed", request=raw_payload.get("data", {})
+                        )
+                    await manager.send_socket(websocket, ServerEvent(type="error", payload=error))
                     if not authenticated and attempts >= settings.server.max_auth_attempts:
                         await manager.close_socket(websocket, code=1008)
                         break
