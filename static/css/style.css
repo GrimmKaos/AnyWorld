@@ -255,6 +255,9 @@ button:disabled {
     border-radius: 1rem;
     background: var(--panel);
 }
+#host-modal .modal-card {
+    width: min(48rem, 100%);
+}
 .modal-card h1,
 .modal-card h2,
 .modal-card p {
@@ -263,6 +266,44 @@ button:disabled {
 #scenario-form {
     display: grid;
     gap: 0.75rem;
+}
+#scenario-form > label,
+#scenario-form details label {
+    display: block;
+}
+#scenario-form fieldset {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 0.55rem 0.75rem;
+    min-width: 0;
+}
+#scenario-form fieldset legend {
+    grid-column: 1 / -1;
+}
+#scenario-form .chance-field {
+    display: grid;
+    min-width: 0;
+    gap: 0.3rem;
+    align-content: start;
+}
+#scenario-form .chance-field label {
+    display: block;
+}
+#scenario-form fieldset input,
+#scenario-form fieldset select,
+#scenario-form details input {
+    width: 100%;
+    min-width: 0;
+}
+#scenario-input,
+#guidance-input,
+#chance-preview {
+    width: 100%;
+    min-width: 0;
+}
+#chance-preview {
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
 }
 #scenario-input {
     min-height: 12rem;
@@ -427,6 +468,12 @@ button:disabled {
         right: 0.35rem;
         bottom: auto;
         font-size: 0.65rem;
+    }
+    #scenario-form fieldset {
+        grid-template-columns: minmax(0, 1fr);
+    }
+    #scenario-form fieldset legend {
+        grid-column: 1;
     }
 }
 
