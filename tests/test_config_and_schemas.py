@@ -87,11 +87,15 @@ llm:
         encoding="utf-8",
     )
     monkeypatch.setenv("AD_SERVER__PORT", "4567")
+    monkeypatch.setenv("AD_SERVER__HOST_PASSWORD", "environment-host")
+    monkeypatch.setenv("AD_SERVER__PLAYER_PASSWORD", "environment-player")
     monkeypatch.setenv("AD_LLM__MODEL_NAME", "environment-model")
 
     loaded = Settings.load(config)
 
     assert loaded.server.port == 4567
+    assert loaded.server.host_password == "environment-host"
+    assert loaded.server.player_password == "environment-player"
     assert loaded.llm.model_name == "environment-model"
     assert loaded.llm.system_prompt == "Direct the game."
 

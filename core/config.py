@@ -96,7 +96,8 @@ class ServerConfig(BaseModel):
         """Reject an unsafe launch until both passwords are explicitly configured."""
         if not self.host_password or not self.player_password:
             raise ValueError(
-                "host_password and player_password must be set in config.yaml before launch"
+                "host_password and player_password must be set in config.yaml or "
+                "AD_SERVER__HOST_PASSWORD/AD_SERVER__PLAYER_PASSWORD before launch"
             )
         if self.host_password == self.player_password:
             raise ValueError("host_password and player_password must differ")
