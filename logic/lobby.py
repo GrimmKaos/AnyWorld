@@ -255,36 +255,45 @@ class LobbyMixin:
             async with self.lock:
                 if not self._job_current(epoch):
                     return
-            await self.transcript.start(
-                self.scenario_title or "Untitled Session",
-                resolution.global_narrative,
-                opening_scenario=self.original_scenario,
-                private_guidance=self.private_guidance,
-            )
-            async with self.lock:
-                if not self._job_current(epoch):
-                    return
-                self.resolver.commit_resolution(prepared)
-                self.current_scenario_state = resolution.global_narrative
-                self.opening_scenario = resolution.global_narrative
-                # The opening establishes in-world presence. Earlier transport
-                # reconnects are not departures or returns within the story.
-                for player in self.players.values():
-                    player.departure_pending = not player.is_connected
-                    player.return_pending = False
-                self.state = GameState.ACTIVE_TURN
-                directive = self._next_turn_locked()
+            committed = False
+            try:
+                await self.transcript.start(
+                    self.scenario_title or "Untitled Session",
+                    resolution.global_narrative,
+                    opening_scenario=self.original_scenario,
+                    private_guidance=self.private_guidance,
+                )
+                async with self.lock:
+                    if not self._job_current(epoch):
+                        return
+                    self.resolver.commit_resolution(prepared)
+                    self.current_scenario_state = resolution.global_narrative
+                    self.opening_scenario = resolution.global_narrative
+                    # The opening establishes in-world presence. Earlier transport
+                    # reconnects are not departures or returns within the story.
+                    for player in self.players.values():
+                        player.departure_pending = not player.is_connected
+                        player.return_pending = False
+                    self.state = GameState.ACTIVE_TURN
+                    directive = self._next_turn_locked()
+                    committed = True
+            finally:
+                if not committed:
+                    await self.transcript.discard_uncommitted()
             payload = resolution.model_dump()
             payload.update(
                 scenario_title=self.scenario_title, original_scenario=self.original_scenario
             )
-            await self._broadcast(ServerEvent(type="state_update", payload=payload))
-            await self._broadcast(
+            self.pending_delivery.append(ServerEvent(type="state_update", payload=payload))
+            self.pending_delivery.append(
                 ServerEvent(type="system_msg", payload={"msg": "The game has started."})
             )
-            await self._broadcast(ServerEvent(type="round_start", payload={"round_number": 1}))
+            self.pending_delivery.append(
+                ServerEvent(type="round_start", payload={"round_number": 1})
+            )
             if directive is not None:
-                await self._broadcast(directive)
+                self.pending_delivery.append(directive)
+            await self._deliver_pending()
             LOGGER.info("Game started players=%d", len(names))
 
     async def _end_game(self: "GameEngine", client_id: str, data: dict[str, object]) -> None:

@@ -99,6 +99,19 @@ dt.player-color-6{{color:#a5d6ff}}dt.player-color-7{{color:#ff9bce}}
                 raise
             return path
 
+    async def discard_uncommitted(self) -> None:
+        """Remove this transaction's opening archive before allowing another start."""
+        async with self._io_lock:
+            if self.path is not None:
+                work = asyncio.create_task(asyncio.to_thread(self.path.unlink, missing_ok=True))
+                try:
+                    await asyncio.shield(work)
+                except asyncio.CancelledError:
+                    await work
+                    self.path = None
+                    raise
+                self.path = None
+
     async def append_round(
         self,
         number: int,

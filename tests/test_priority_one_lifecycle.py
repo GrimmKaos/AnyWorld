@@ -274,10 +274,13 @@ def test_delivery_deadline_does_not_revert_a_committed_round(tmp_path):
         engine, sender, resolver = await setup(tmp_path)
         settings.llm.request_timeout_seconds = 0.02
         original = sender.broadcast_global
+        blocked = False
 
         async def blocked_delivery(event):
+            nonlocal blocked
             await original(event)
-            if event.type == "state_update":
+            if event.type == "state_update" and not blocked:
+                blocked = True
                 await asyncio.Event().wait()
 
         sender.broadcast_global = blocked_delivery
