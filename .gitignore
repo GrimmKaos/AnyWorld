@@ -14,6 +14,7 @@ __pycache__/
 .pi/
 certs/cert.pem
 certs/key.pem
+certs/*.tmp
 pytest-output.txt
 .debug/
 benchmarks/*

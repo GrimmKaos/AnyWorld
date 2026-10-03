@@ -1,10 +1,49 @@
 """Tests use isolated settings, never the user's passwords or live backend."""
 
 import pytest
+import socket
+from threading import local
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from core.config import LLMConfig, ServerConfig, settings
+
+
+def pytest_addoption(parser):
+    parser.addoption("--allow-network", action="store_true", help="Opt in to live network tests")
+
+
+@pytest.fixture(autouse=True)
+def prohibit_network(request, monkeypatch):
+    """Catch accidental SDK, discovery, DNS and UDP traffic in offline tests."""
+    if request.config.getoption("--allow-network"):
+        return
+
+    internal = local()
+    socketpair = socket.socketpair
+
+    def internal_socketpair(*args, **kwargs):
+        # Windows builds asyncio's self-pipe using a private loopback socket pair.
+        # Only this synchronous operation may connect; backend loopback is blocked.
+        internal.socketpair = True
+        try:
+            return socketpair(*args, **kwargs)
+        finally:
+            internal.socketpair = False
+
+    def guard(original):
+        def forbidden(*args, **kwargs):
+            if getattr(internal, "socketpair", False):
+                return original(*args, **kwargs)
+            raise AssertionError("Live network access is forbidden in the normal test suite")
+
+        return forbidden
+
+    for name in ("connect", "connect_ex", "sendto"):
+        monkeypatch.setattr(socket.socket, name, guard(getattr(socket.socket, name)))
+    for name in ("getaddrinfo", "gethostbyname", "gethostbyname_ex"):
+        monkeypatch.setattr(socket, name, guard(getattr(socket, name)))
+    monkeypatch.setattr(socket, "socketpair", internal_socketpair)
 
 
 @pytest.fixture

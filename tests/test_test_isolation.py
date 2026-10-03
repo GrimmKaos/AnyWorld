@@ -1,6 +1,7 @@
 """Temporary test artifacts are removed on normal and failing teardown paths."""
 
 from pathlib import Path
+import socket
 
 import pytest
 
@@ -30,3 +31,18 @@ def test_default_transcripts_stay_in_disposable_working_directory(tmp_path):
     transcript = GameTranscript()
     assert Path.cwd() == tmp_path
     assert transcript.log_dir.resolve() == tmp_path / ".logged_games"
+
+
+def test_network_guard_blocks_external_and_backend_transports(request):
+    if request.config.getoption("--allow-network"):
+        pytest.skip("Network guard explicitly disabled")
+    with pytest.raises(AssertionError, match="network access is forbidden"):
+        socket.getaddrinfo("api.openai.com", 443)
+    with socket.socket() as connection:
+        with pytest.raises(AssertionError, match="network access is forbidden"):
+            connection.connect(("127.0.0.1", 8080))
+        with pytest.raises(AssertionError, match="network access is forbidden"):
+            connection.connect_ex(("127.0.0.1", 8080))
+    with socket.socket(type=socket.SOCK_DGRAM) as connection:
+        with pytest.raises(AssertionError, match="network access is forbidden"):
+            connection.sendto(b"probe", ("127.0.0.1", 8080))

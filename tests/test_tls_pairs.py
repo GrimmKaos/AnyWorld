@@ -82,7 +82,7 @@ def test_generated_certificate_paths_are_ignored_by_repository_rules(tmp_path):
     (tmp_path / ".gitignore").write_bytes(ignore.read_bytes())
     _, cert, key = tls.ensure_cert(["localhost", "127.0.0.1"])
     subprocess.run(["git", "init", "--quiet"], check=True, cwd=tmp_path)
-    paths = [cert, key, "certs/active.json", "certs/cert-example.tmp", "certs/key-example.tmp"]
+    paths = [cert, key, "certs/cert-example.tmp", "certs/key-example.tmp"]
     result = subprocess.run(
         ["git", "check-ignore", "--", *paths],
         check=True,

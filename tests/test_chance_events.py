@@ -527,6 +527,8 @@ def test_unrelated_private_guidance_cannot_hide_public_action_roll(tmp_path, mon
 @pytest.mark.parametrize("source", ["", RULE, "Keep the story moving quickly."])
 def test_stray_hidden_inventory_label_preserves_no_roll_without_retry(provider, source):
     async def run():
+        import httpx
+
         settings.llm.provider = provider
         draft = DicePlan(
             rolls={"Arxs": False, "Host": True},
@@ -535,6 +537,9 @@ def test_stray_hidden_inventory_label_preserves_no_roll_without_retry(provider, 
         )
         client = FakeClient(draft)
         manager = LLMContextManager(client)
+        manager.budget._http = httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda request: httpx.Response(404))
+        )
         manager.set_genesis(
             "A quiet storeroom with a locked door.",
             "Add a 20% chance per round that a dwarf interrupts a player's action.\n"
