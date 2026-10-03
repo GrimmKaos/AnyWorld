@@ -2,7 +2,9 @@
 
 import asyncio
 import json
+import os
 
+import httpx
 import pytest
 
 from core.config import DEFAULT_CONFIG_PATH, Settings, settings
@@ -12,6 +14,38 @@ from logic.llm.errors import LLMResolutionError
 from logic.llm import prompts
 from logic.llm_manager import LLMContextManager, participant_schema
 from test_priority_one_llm import FakeClient
+
+
+@pytest.mark.parametrize("provider", ["openai", "compatible"])
+def test_client_ignores_inherited_organization_and_project(monkeypatch, provider):
+    """Ambient SDK scope must not override the game's configured API key."""
+    monkeypatch.setenv("OPENAI_ORG_ID", "org-other-application")
+    monkeypatch.setenv("OPENAI_PROJECT_ID", "proj-other-application")
+    settings.llm.provider = provider
+    requests = []
+
+    async def send(client, request, **kwargs):
+        requests.append(request)
+        return httpx.Response(200, json={"object": "list", "data": []}, request=request)
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", send)
+
+    async def run():
+        manager = LLMContextManager()
+        manager.client = manager._create_client()
+        try:
+            await manager.client.models.list()
+        finally:
+            await manager.close()
+
+    asyncio.run(run())
+
+    assert len(requests) == 1
+    assert requests[0].headers["authorization"] == f"Bearer {settings.llm.api_key}"
+    assert "openai-organization" not in requests[0].headers
+    assert "openai-project" not in requests[0].headers
+    assert os.environ["OPENAI_ORG_ID"] == "org-other-application"
+    assert os.environ["OPENAI_PROJECT_ID"] == "proj-other-application"
 
 
 def test_injected_classification_preserves_rolls_and_original_plan():

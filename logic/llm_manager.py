@@ -113,7 +113,12 @@ class LLMContextManager:
                     "response": [raw_logger.capture],
                 }
             )
-        return AsyncOpenAI(**client_options)
+        client = AsyncOpenAI(**client_options)
+        # Passing None to the constructor would still inherit OPENAI_ORG_ID and
+        # OPENAI_PROJECT_ID. Scope this client's requests to its configured API key.
+        client.organization = None
+        client.project = None
+        return client
 
     def set_genesis(self, scenario: str, guidance: str = "") -> None:
         """Set a new initial scenario and optional host guidance, then clear history."""
