@@ -43,6 +43,12 @@ class WindowBudget:
         self.record(key)
         return True
 
+    def retry_after(self, key: str) -> float:
+        """Seconds until a rejected request can fit, without extending the window."""
+        if not self.blocked(key):
+            return 0.0
+        return max(0.0, self.records[key][0] + self.seconds - monotonic())
+
 
 def source_address(socket: WebSocket) -> str:
     direct = socket.client.host if socket.client else "unknown"

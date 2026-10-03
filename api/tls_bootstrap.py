@@ -4,7 +4,6 @@ import datetime
 import ipaddress
 import logging
 import socket
-import json
 import re
 from uuid import uuid4
 from pathlib import Path
@@ -97,22 +96,10 @@ def _validate_pair(cert_path: Path, key_path: Path, addresses: list[str]) -> Non
         ) from exc
 
 
-def _active_paths() -> tuple[Path, Path]:
-    manifest = CERT_DIR / "active.json"
-    if manifest.exists():
-        try:
-            pair = json.loads(manifest.read_text(encoding="utf-8"))["pair"]
-            if re.fullmatch(r"pair-[0-9a-f]{32}", pair):
-                return CERT_DIR / pair / "cert.pem", CERT_DIR / pair / "key.pem"
-        except (OSError, ValueError, KeyError, TypeError):
-            pass
-    return CERT_PATH, KEY_PATH
-
-
 def _cert_covers_ip_and_is_fresh(ip: str) -> bool:
     """Return whether the existing certificate covers the IP and is not expiring soon."""
     try:
-        _validate_pair(*_active_paths(), [ip])
+        _validate_pair(CERT_PATH, KEY_PATH, [ip])
         return True
     except ValueError:
         return False
@@ -151,12 +138,16 @@ def _generate_cert(ip: str, addresses: list[str] | None = None) -> tuple[Path, P
         .sign(key, hashes.SHA256())
     )
 
-    pair_name = "pair-" + uuid4().hex
-    pair_dir = CERT_DIR / pair_name
-    pair_dir.mkdir()
-    cert_path, key_path = pair_dir / "cert.pem", pair_dir / "key.pem"
-    pointer = CERT_DIR / (pair_name + ".tmp")
+    transaction = uuid4().hex
+    cert_path = CERT_DIR / f"cert-{transaction}.tmp"
+    key_path = CERT_DIR / f"key-{transaction}.tmp"
+    temporary = [cert_path, key_path]
+    published = []
+    previous = {}
     try:
+        # Save only the files we own; explicitly supplied pairs never enter here.
+        for target in (CERT_PATH, KEY_PATH):
+            previous[target] = target.read_bytes() if target.exists() else None
         key_path.write_bytes(
             key.private_bytes(
                 encoding=serialization.Encoding.PEM,
@@ -167,15 +158,27 @@ def _generate_cert(ip: str, addresses: list[str] | None = None) -> tuple[Path, P
         key_path.chmod(0o600)
         cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
         _validate_pair(cert_path, key_path, addresses or [ip])
-        pointer.write_text(json.dumps({"pair": pair_name}), encoding="utf-8")
-        pointer.replace(CERT_DIR / "active.json")
+        for source, target in ((cert_path, CERT_PATH), (key_path, KEY_PATH)):
+            source.replace(target)
+            published.append(target)
     except BaseException:
-        pointer.unlink(missing_ok=True)
-        cert_path.unlink(missing_ok=True)
-        key_path.unlink(missing_ok=True)
-        pair_dir.rmdir()
+        # A failed second replacement must not leave a new cert with the old key.
+        for target in reversed(published):
+            content = previous[target]
+            if content is None:
+                target.unlink(missing_ok=True)
+            else:
+                rollback = CERT_DIR / f"{target.stem}-rollback-{transaction}.tmp"
+                temporary.append(rollback)
+                rollback.write_bytes(content)
+                if target == KEY_PATH:
+                    rollback.chmod(0o600)
+                rollback.replace(target)
         raise
-    return cert_path, key_path
+    finally:
+        for path in temporary:
+            path.unlink(missing_ok=True)
+    return CERT_PATH, KEY_PATH
 
 
 def ensure_cert(
@@ -191,7 +194,7 @@ def ensure_cert(
     if cert_path and key_path:
         _validate_pair(Path(cert_path), Path(key_path), addresses)
         return ip, cert_path, key_path
-    cert, key = _active_paths()
+    cert, key = CERT_PATH, KEY_PATH
     try:
         _validate_pair(cert, key, addresses)
     except ValueError:

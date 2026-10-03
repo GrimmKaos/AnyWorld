@@ -79,15 +79,44 @@ class GameEngine(LobbyMixin):
         self.journal = PublicJournal(self.session_id)
         self.latest_round: dict[str, object] | None = None
         self.accepted_actions: dict[tuple[str, str], dict[str, object]] = {}
+        self.pending_delivery: deque[ServerEvent] = deque()
+        self.publication_lock = asyncio.Lock()
+        self._published_cursor = 0
+
+    async def _deliver_pending(self) -> None:
+        """Finish committed events in order, under effects_lock, without inference."""
+        while self.pending_delivery:
+            await self._broadcast(self.pending_delivery[0])
+            self.pending_delivery.popleft()
 
     async def _broadcast(self, event: ServerEvent) -> None:
-        try:
-            event = await self.journal.record(event)
-        except OSError:
-            LOGGER.exception("Public journal write failed")
+        # Preserve journal/broadcast order even when party chat arrives during a
+        # cancelled journal write. This lock never spans inference or transcripts.
+        async with self.publication_lock:
+            try:
+                try:
+                    event = await self.journal.record(event)
+                except OSError:
+                    LOGGER.exception("Public journal write failed")
+                await self._publish_recorded(event)
+            except asyncio.CancelledError:
+                if event.payload.get("session_id") == self.session_id and event.payload.get(
+                    "event_id"
+                ):
+                    # record() waits for its worker on cancellation and keeps the
+                    # assigned identity. Finish its delivery before later IDs pass it.
+                    await self._publish_recorded(event)
+                raise
+
+    async def _publish_recorded(self, event: ServerEvent) -> None:
+        event_id = event.payload.get("event_id")
+        if isinstance(event_id, int) and event_id <= self._published_cursor:
+            return
         if event.type == "state_update" and event.payload.get("round_number"):
             self.latest_round = dict(event.payload)
         await self.sender.broadcast_global(event)
+        if isinstance(event_id, int):
+            self._published_cursor = event_id
 
     async def _journal_page(self, client_id: str, data: dict[str, object]) -> None:
         from core.schemas import JournalInput
@@ -175,7 +204,9 @@ class GameEngine(LobbyMixin):
                     # Delivery can hit the job deadline after state has committed.
                     # Do not offer a retry for actions that have already resolved.
                     LOGGER.warning("Preserving committed state generation=%d", epoch)
-                    if directive is not None:
+                    had_pending = bool(self.pending_delivery)
+                    await self._deliver_pending()
+                    if not had_pending and directive is not None:
                         await self._broadcast(directive)
                     return
                 await self._broadcast(
@@ -235,12 +266,16 @@ class GameEngine(LobbyMixin):
         """Terminate the session, cancel inference and finalize the transcript."""
         LOGGER.info("Game shutdown requested close_resolver=%s", close_resolver)
         async with self.effects_lock:
+            # If shutdown wins the lock after a delivery timeout, preserve the
+            # already committed outcome before publishing the terminal event.
+            await self._deliver_pending()
             async with self.lock:
                 already_ended = self.state is GameState.ENDED
                 self.state = GameState.ENDED
                 self.generation += 1
                 self.active_player_id = None
                 self.round_paused = False
+                self.pending_delivery.clear()
                 task = self.inference_task
                 if task is not None:
                     task.cancel()
@@ -304,6 +339,8 @@ class GameEngine(LobbyMixin):
             raise ValueError("Authenticate before submitting an action.")
         if self.state is not GameState.ACTIVE_TURN:
             raise ValueError("Actions are blocked while no turn is active.")
+        if self.pending_delivery:
+            raise ValueError("The preceding outcome is still being delivered; please wait.")
         if client_id != self.active_player_id:
             raise ValueError("It is not your turn.")
 
@@ -610,6 +647,16 @@ class GameEngine(LobbyMixin):
                     "player_order": [self.players[item].name for item in self.join_order],
                     "dice_results": public_dice,
                 }
+                self.pending_delivery.append(
+                    ServerEvent(type="state_update", payload=dict(self.latest_round))
+                )
+                if directive is not None:
+                    self.pending_delivery.extend(
+                        [
+                            ServerEvent(type="round_start", payload={"round_number": number + 1}),
+                            directive,
+                        ]
+                    )
             try:
                 await self.transcript.append_round(
                     number,
@@ -629,36 +676,23 @@ class GameEngine(LobbyMixin):
                 )
             except (OSError, RuntimeError):
                 LOGGER.warning("Could not append round %s to transcript", number)
-            await self.resolver.complete_round_debug(
-                number,
-                self._round_debug_summary(
+            try:
+                await self.resolver.complete_round_debug(
                     number,
-                    actions,
-                    participants,
-                    llm_actions,
-                    pending,
-                    resolution,
-                    display,
-                    display_actions,
-                ),
-            )
-            payload = display.model_dump()
-            payload.update(
-                round_number=number,
-                submitted_actions={
-                    name: action
-                    for name, action in display_actions.items()
-                    if action != IDLE_ACTION
-                },
-                player_order=[self.players[item].name for item in self.join_order],
-                dice_results=public_dice,
-            )
-            await self._broadcast(ServerEvent(type="state_update", payload=payload))
-            if directive is not None:
-                await self._broadcast(
-                    ServerEvent(type="round_start", payload={"round_number": number + 1})
+                    self._round_debug_summary(
+                        number,
+                        actions,
+                        participants,
+                        llm_actions,
+                        pending,
+                        resolution,
+                        display,
+                        display_actions,
+                    ),
                 )
-                await self._broadcast(directive)
+            except Exception:
+                LOGGER.exception("Could not finalize round diagnostics round=%d", number)
+            await self._deliver_pending()
 
     def _round_debug_summary(
         self,

@@ -54,7 +54,7 @@ class ServerEvent(StrictModel):
 class ChanceEvent(StrictModel):
     """One applicable occurrence of a percentage rule from private guidance."""
 
-    source_rule: str = Field(min_length=1, max_length=1_000)
+    source_rule: str = Field(min_length=1, max_length=1_400)
     trigger: Literal["per_round", "condition"]
     occurrence: str = Field(min_length=1, max_length=240)
     chance_percent: int = Field(ge=0, le=100)
@@ -72,7 +72,7 @@ class ChanceRuleDecision(StrictModel):
     """One authoritative list of occurrences for a private rule this round."""
 
     trigger: Literal["per_round", "condition"]
-    occurrences: list[str] = Field(max_length=16)
+    occurrences: list[str] = Field(max_length=100)
     reason: str = Field(min_length=1, max_length=240)
 
 
@@ -115,7 +115,7 @@ class StructuredChanceRule(StrictModel):
 class ChanceTriggerPlan(StrictModel):
     """Exact participant matches for the normalized private chance rule this round."""
 
-    occurrences: list[str] = Field(max_length=16)
+    occurrences: list[str] = Field(max_length=100)
 
 
 class DicePlan(StrictModel):
@@ -124,7 +124,7 @@ class DicePlan(StrictModel):
     rolls: dict[str, bool]
     hidden_rolls: list[str]
     hidden_roll_sources: dict[str, str] = Field(default_factory=dict)
-    chance_events: list[ChanceEvent] = Field(default_factory=list, max_length=16)
+    chance_events: list[ChanceEvent] = Field(default_factory=list, max_length=100)
 
 
 class ContextSummary(StrictModel):

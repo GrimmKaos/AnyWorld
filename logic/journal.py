@@ -45,10 +45,17 @@ class PublicJournal:
         if fields is None:
             return event
         async with self.lock:
+            # A cancelled committed delivery may retry this exact event after its
+            # write completed. Retain its identity before the first I/O await.
+            if event.payload.get("session_id") == self.session_id and isinstance(
+                event.payload.get("event_id"), int
+            ):
+                return event
             self.cursor += 1
             payload = {key: value for key, value in event.payload.items() if key in fields}
             payload.update(session_id=self.session_id, event_id=self.cursor)
             public = ServerEvent(type=event.type, payload=payload)
+            event.payload = payload
             self._pending.append(public)
             self._pending_bytes += len(public.model_dump_json().encode("utf-8"))
             while len(self._pending) > 128 or self._pending_bytes > 2097152:
@@ -108,8 +115,6 @@ class PublicJournal:
             archive_source = self.path.open(encoding="utf-8")
         except OSError:
             archive_source = nullcontext(())
-            if self.path.exists():
-                self.incomplete = True
         with archive_source as archive:
             previous_id = 0
             for line in chain(archive, (event.model_dump_json() for event in self._pending)):
@@ -126,6 +131,8 @@ class PublicJournal:
                     continue
                 if event_id <= previous_id:
                     continue
+                if event_id != previous_id + 1:
+                    self.incomplete = True
                 previous_id = event_id
                 if event_id <= after:
                     continue
@@ -138,4 +145,6 @@ class PublicJournal:
                 if matches:
                     events.append(event)
                     size += len(line.encode("utf-8"))
-        return events, max(cursor, self.cursor), False
+        if previous_id < self.cursor:
+            self.incomplete = True
+        return events, cursor, False
