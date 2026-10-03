@@ -1,5 +1,5 @@
 "use strict";
-const socketScheme = window.location.protocol === "https:" ? "wss" : "clientSession.ws";
+const socketScheme = window.location.protocol === "https:" ? "wss" : "ws";
 // WAN routes and reverse proxies can drop an initial handshake. Retry the socket
 // without requiring the user to reload the login page manually.
 
@@ -16,7 +16,7 @@ function connectSocket() {
     clearTimeout(clientSession.reconnectTimer);
     clearTimeout(clientSession.connectionTimer);
     const previous = clientSession.ws;
-    const socket = new WebSocket(`${socketScheme}://${window.location.host}/clientSession.ws/${clientSession.clientId}`);
+    const socket = new WebSocket(`${socketScheme}://${window.location.host}/ws/${clientSession.clientId}`);
     clientSession.ws = socket;
     clientSession.authenticated = false;
     elements.actionInput.disabled = true;

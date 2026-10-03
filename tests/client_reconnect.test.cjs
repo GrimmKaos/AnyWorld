@@ -105,6 +105,7 @@ async function joined(local, session) {
 test("same-tab disconnect automatically reuses authenticated credentials", async () => {
     const tab = await joined();
     const first = tab.sockets[0];
+    assert.match(first.url, /^wss:\/\/game\.test:4141\/ws\/[0-9a-f-]{36}$/);
     first.close();
     const next = tab.reconnect();
     assert.equal(next.url, first.url);
