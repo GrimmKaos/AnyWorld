@@ -26,7 +26,6 @@ const elements = {
     chanceEligibility: document.getElementById("chance-eligibility"),
     chanceEffect: document.getElementById("chance-effect"),
     chanceScope: document.getElementById("chance-scope"),
-    chancePreview: document.getElementById("chance-preview"),
     guidance: document.getElementById("guidance-input"),
     lobbyStep: document.getElementById("lobby-step"),
     startButton: document.getElementById("start-button"),

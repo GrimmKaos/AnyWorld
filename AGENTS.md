@@ -157,8 +157,9 @@ and snapshots retain the opening separately from the latest round state. Reconne
 public journal cursors rather than embedding full history in snapshots; History provides search
 and JSONL export. Host-typed scenario prompt precedes the generated Opening scenario.
 The host card is min(48rem, 100%) wide, with chance-control labels above their own inputs in
-two columns, stacking into one column at <=700px. Inputs can shrink and the private rule preview
-wraps. Freeform DM guidance remains separate. Script/CSS URLs use manual cache versions in
+two columns, stacking into one column at <=700px. Inputs can shrink. Chance rules are validated
+on scenario submission; the host form has no JSON preview. Freeform DM guidance remains separate.
+Script/CSS URLs use manual cache versions in
 `templates/index.html`; bump the relevant version when changing an asset. The client uses
 ws/wss according to page protocol and the fixed `/ws/{client_id}` route.
 

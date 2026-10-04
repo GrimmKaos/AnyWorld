@@ -252,14 +252,6 @@ function structuredChanceRule() {
     if (elements.chanceEvent.value.trim()) throw new Error("Use controls or legacy text, not both.");
     return rule;
 }
-elements.scenarioForm.addEventListener("input", () => {
-    try {
-        const rule = structuredChanceRule();
-        elements.chancePreview.textContent = rule ? "Private rule preview:\n" + JSON.stringify(rule, null, 2)
-            : elements.chanceEvent.value.trim();
-    } catch (error) { elements.chancePreview.textContent = error.message; }
-});
-
 elements.endGameButton.addEventListener("click", () => {
     if (window.confirm("End this game for every player?")) {
         send("end_game", {});

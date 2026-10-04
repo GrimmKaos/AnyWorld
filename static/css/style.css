@@ -296,14 +296,9 @@ button:disabled {
     min-width: 0;
 }
 #scenario-input,
-#guidance-input,
-#chance-preview {
+#guidance-input {
     width: 100%;
     min-width: 0;
-}
-#chance-preview {
-    overflow-wrap: anywhere;
-    white-space: pre-wrap;
 }
 #scenario-input {
     min-height: 12rem;

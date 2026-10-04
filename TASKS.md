@@ -13,7 +13,7 @@ with `PYTHONDONTWRITEBYTECODE=1` to avoid bytecode/cache artifacts, including in
 In-process ASGI tests are allowed; live server startup and backend benchmarks remain outside this
 workflow. The no-tests statement above records the historical review, not a current restriction.
 
-Historical benchmark observations below came from local runs. Their reports and runner files
+Historical benchmark observations below came from local runs. Their raw reports and local runner files
 are not part of the published repository; these observations are not reproducible evidence
 provided by this checkout and do not establish general performance guarantees.
 
@@ -212,6 +212,19 @@ Existing history/benchmark observations are retained and were not independently 
 - [ ] **P3 - Version static assets reproducibly** - Replace manual ?v= values with content/build hashes and suitable cache headers so unchanged assets stay cached and edits invalidate reliably.
 
 ## Done
+
+- [x] ~~P2 - Remove the private chance-rule JSON preview~~ (2026-10-04)
+  - Removed the host-form preview, its input listener, DOM reference and CSS. Structured chance
+    rules still validate on submission and report errors through the existing scenario form.
+  - Refreshed stylesheet and script cache versions and updated the current UI maintenance guide.
+  - Validation: 389 Python tests and 24 Node client tests passed; Black and Flake8 passed.
+    Python reported the existing Starlette deprecation warning.
+
+- [x] ~~Record historical local backend benchmark observations~~ (2026-10-04)
+  - Added BENCHMARKS.md with the existing 2026-09-28 adjudication, memory, tokenizer and round
+    usage observations, including the hidden-hazard false negative and measurement limits.
+  - The historical local runners and raw reports are absent from this checkout. No live
+    inference or benchmarks were rerun for this documentation and commit.
 
 - [x] ~~P1 - Restore browser WebSocket routing and refresh cached scripts~~ (2026-10-03)
   - Corrected the accidental `clientSession.ws` substitutions in the protocol and URL path:
