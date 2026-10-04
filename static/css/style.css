@@ -129,6 +129,7 @@ body {
     display: flex;
     align-items: center;
     justify-content: center;
+    gap: 0.35rem;
     padding: 0 9rem;
     border-bottom: 1px solid var(--border);
     font-weight: bold;

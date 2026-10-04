@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const { readFileSync } = require("node:fs");
-const { randomUUID, createHash } = require("node:crypto");
+const { randomUUID, createHash, webcrypto } = require("node:crypto");
 const vm = require("node:vm");
 const path = require("node:path");
 
@@ -63,10 +63,10 @@ function browser(localStorage = storage(), sessionStorage = storage()) {
     const clearTimeout = (id) => timers.delete(id);
     const window = {
         location: { protocol: "https:", host: "game.test:4141" },
-        crypto: { randomUUID }, localStorage, sessionStorage, setTimeout,
+        crypto: { randomUUID, subtle: webcrypto.subtle }, localStorage, sessionStorage, setTimeout,
     };
     const runtime = {
-        window, sessionStorage, WebSocket: Socket, setTimeout, clearTimeout, console, Blob,
+        window, sessionStorage, WebSocket: Socket, setTimeout, clearTimeout, console, Blob, TextEncoder,
         URL: { createObjectURL(blob) { blobs.push(blob); return "blob:test"; }, revokeObjectURL() {} },
         MutationObserver: class { observe() {} },
         document: { getElementById: node, createElement: node, listeners: {},
@@ -83,7 +83,7 @@ function browser(localStorage = storage(), sessionStorage = storage()) {
             timers.delete(found[0]);
             found[1].callback();
         },
-        sockets, node, localStorage, sessionStorage, hash: runtime.fallbackSha256,
+        sockets, node, localStorage, sessionStorage,
         async login(name = "Arxs", password = "party-password") {
             node("name-input").value = name;
             node("password-input").value = password;
@@ -306,13 +306,6 @@ test("corrupt stored JSON does not prevent a fresh login", async () => {
     const tab = await joined(local, session);
     assert.equal(tab.node("login-modal").hidden, true);
 });
-
-for (const value of ["", "abc", "x".repeat(55), "x".repeat(56), "x".repeat(64),
-    "x".repeat(200), "Salasana 🌲 äö漢字"]) {
-    test(`fallback SHA-256 matches standard hashing for ${value.length} characters`, () => {
-        assert.equal(browser().hash(value), createHash("sha256").update(value).digest("hex"));
-    });
-}
 
 test("opening uses generated text and snapshots keep it separate from later rounds", async () => {
     const tab = await joined();
