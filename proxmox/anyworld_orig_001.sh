@@ -677,11 +677,10 @@ RUN_BENCH="$(get RUN_BENCH)"
 export DEBIAN_FRONTEND=noninteractive
 
 # --- Packages -------------------------------------------------------------------
-step "Refreshing package lists"
-apt-get update -q
-step "Installing system packages (git, Python 3, curl$([[ "$INSTALL_NODE" == "yes" ]] && echo ", Node.js"))"
+step "Installing system packages"
 pkgs=(git python3 python3-venv python3-pip ca-certificates curl openssl)
 if [[ "$INSTALL_NODE" == "yes" ]]; then pkgs+=(nodejs); fi
+apt-get update -q
 apt-get install -y -q --no-install-recommends "${pkgs[@]}"
 python3 - <<'PY'
 import sys
@@ -711,15 +710,13 @@ fi
 note "INFO  AnyWorld commit $(git -C "$AW_DIR" rev-parse --short HEAD) from ${REPO}"
 
 # --- Python environment --------------------------------------------------------------
-step "Creating Python virtual environment"
+step "Creating virtual environment and installing AnyWorld"
 cd "$AW_DIR"
 python3 -m venv "$AW_DIR/venv"
 "$AW_DIR/venv/bin/python" -m pip install --quiet --upgrade pip
 if [[ "$RUN_QC" == "yes" ]]; then
-  step "Installing Python dependencies + dev tools (fastapi, uvicorn, openai, tiktoken, pytest...)"
   "$AW_DIR/venv/bin/python" -m pip install --quiet -e '.[dev]'
 else
-  step "Installing Python dependencies (fastapi, uvicorn, openai, tiktoken...)"
   "$AW_DIR/venv/bin/python" -m pip install --quiet -e .
 fi
 
@@ -791,12 +788,12 @@ fi
 
 # --- Quality checks (INSTALL.md#quality-checks) ------------------------------------
 if [[ "$RUN_QC" == "yes" ]]; then
+  step "Running quality checks"
   QC_LOG="$AW_DIR/quality-checks.log"
   : >"$QC_LOG"
   chown "$AW_USER:$AW_USER" "$QC_LOG"
   qc() {
     local name="$1" cmd="$2"
-    step "Quality check: ${name}"
     echo "### ${name}: ${cmd}" >>"$QC_LOG"
     if as_aw_raw "$cmd" >>"$QC_LOG" 2>&1; then
       note "PASS  ${name}"
@@ -831,36 +828,6 @@ echo "AnyWorld updated to $(as_aw git -C "$AW_DIR" rev-parse --short HEAD)"
 EOF
 chmod 755 /usr/local/bin/anyworld-update
 
-# --- Console login banner (shown under the community-scripts LXC details) -------
-step "Adding AnyWorld info to the console login banner"
-cat >/etc/profile.d/10-anyworld.sh <<'EOF'
-# AnyWorld login banner - POSIX sh (sourced by /etc/profile for login shells)
-case $- in *i*) ;; *) return 0 2>/dev/null || exit 0 ;; esac
-_aw_dir=/opt/anyworld
-_aw_port=""
-if [ -r "$_aw_dir/.env" ]; then
-  _aw_port=$(sed -n "s/^AD_SERVER__PORT=['\"]\{0,1\}\([0-9][0-9]*\).*/\1/p" "$_aw_dir/.env" | tail -n 1)
-fi
-if [ -z "$_aw_port" ] && [ -r "$_aw_dir/config.yaml" ]; then
-  _aw_port=$(awk '/^server:/{s=1;next} /^[^ #]/{s=0} s && $1=="port:"{gsub(/[^0-9]/,"",$2); print $2; exit}' "$_aw_dir/config.yaml")
-fi
-[ -n "$_aw_port" ] || _aw_port=4141
-_aw_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
-_aw_state=$(systemctl is-active anyworld 2>/dev/null || true)
-[ -n "$_aw_state" ] || _aw_state="not installed"
-case "$_aw_state" in active) _aw_sc='\033[1;92m' ;; *) _aw_sc='\033[1;91m' ;; esac
-_yw='\033[33m'; _gn='\033[1;92m'; _cl='\033[m'
-printf '\n'
-printf '    \360\237\216\262 %bAnyWorld URL: %bhttps://%s:%s/%b\n' "$_yw" "$_gn" "${_aw_ip:-<container-ip>}" "$_aw_port" "$_cl"
-printf '    \360\237\224\214 %bGame port: %b%s/tcp (HTTPS only)%b\n' "$_yw" "$_gn" "$_aw_port" "$_cl"
-printf '    \342\232\231\357\270\217  %bService: %b%s%b\n' "$_yw" "$_aw_sc" "$_aw_state" "$_cl"
-printf '    \360\237\223\204 %bConfig: %b%s/config.yaml%b\n' "$_yw" "$_gn" "$_aw_dir" "$_cl"
-printf '    %bNew game / apply config:%b systemctl restart anyworld\n' "$_yw" "$_cl"
-printf '    %bLive log:%b journalctl -u anyworld -f    %bUpdate:%b anyworld-update\n' "$_yw" "$_cl" "$_yw" "$_cl"
-unset _aw_dir _aw_port _aw_ip _aw_state _aw_sc _yw _gn _cl
-EOF
-chmod 644 /etc/profile.d/10-anyworld.sh
-
 # --- systemd service ------------------------------------------------------------
 if [[ "$SERVICE" == "yes" ]]; then
   step "Installing systemd service"
@@ -893,7 +860,7 @@ EOF
   note "PASS  systemd service installed and enabled"
 
   if [[ "$START_NOW" == "yes" ]]; then
-    step "Starting AnyWorld and waiting for HTTPS to answer"
+    step "Starting AnyWorld"
     systemctl restart anyworld
     probe="127.0.0.1"
     if [[ -n "$BIND_HOST" && "$BIND_HOST" != "0.0.0.0" && "$BIND_HOST" != "::" ]]; then probe="$BIND_HOST"; fi
@@ -915,7 +882,7 @@ fi
 
 # --- Optional model benchmark ----------------------------------------------------
 if [[ "$RUN_BENCH" == "yes" ]]; then
-  step "Running model benchmark: 40 live trials (can take 10+ minutes)"
+  step "Running chance-event benchmark (this can take a while)"
   safe="$(printf '%s' "$MODEL" | tr -c 'A-Za-z0-9._-' '_')"
   out="benchmarks/model-bench-${safe}.json"
   BLOG="$AW_DIR/benchmark.log"
@@ -937,65 +904,6 @@ AWEOF
 # ==============================================================================
 # Install AnyWorld into the container
 # ==============================================================================
-aw_fmt_time() {
-  local t="$1"
-  if ((t >= 60)); then printf '%dm %02ds' $((t / 60)) $((t % 60)); else printf '%ds' "$t"; fi
-}
-
-# Run the in-container installer in the background and print each "==> step"
-# marker as it appears, with per-step timings and a heartbeat for long steps.
-aw_run_with_progress() {
-  local log="$1"
-  shift
-  : >"$log"
-  "$@" >"$log" 2>&1 &
-  local pid=$! rc=0 seen=0 n=0 cur="" line
-  local t_start=$SECONDS t_step=$SECONDS t_beat=$SECONDS
-
-  while kill -0 "$pid" 2>/dev/null; do
-    n=$(grep -c '^==> ' "$log" 2>/dev/null || true)
-    n=${n:-0}
-    if ((n > seen)); then
-      while IFS= read -r line; do
-        if [[ -n "$cur" ]]; then
-          echo -e "  ${GN}✔${CL} ${cur} ${DGN}($(aw_fmt_time $((SECONDS - t_step))))${CL}"
-        fi
-        cur="${line#==> }"
-        t_step=$SECONDS
-        t_beat=$SECONDS
-        echo -e "  ${YW}➜${CL} ${cur}..."
-      done < <(grep '^==> ' "$log" | tail -n +"$((seen + 1))")
-      seen=$n
-    elif ((SECONDS - t_beat >= 30)); then
-      echo -e "    ${DGN}… still working: $(aw_fmt_time $((SECONDS - t_step))) on this step, $(aw_fmt_time $((SECONDS - t_start))) total${CL}"
-      t_beat=$SECONDS
-    fi
-    sleep 2
-  done
-  wait "$pid" || rc=$?
-
-  # Pick up any steps that started and finished between the last two polls.
-  n=$(grep -c '^==> ' "$log" 2>/dev/null || true)
-  n=${n:-0}
-  if ((n > seen)); then
-    while IFS= read -r line; do
-      if [[ -n "$cur" ]]; then
-        echo -e "  ${GN}✔${CL} ${cur} ${DGN}($(aw_fmt_time $((SECONDS - t_step))))${CL}"
-      fi
-      cur="${line#==> }"
-      t_step=$SECONDS
-    done < <(grep '^==> ' "$log" | tail -n +"$((seen + 1))")
-  fi
-  if [[ -n "$cur" ]]; then
-    if [[ "$rc" -eq 0 ]]; then
-      echo -e "  ${GN}✔${CL} ${cur} ${DGN}($(aw_fmt_time $((SECONDS - t_step))))${CL}"
-    else
-      echo -e "  ${RD}✖${CL} ${cur} ${RD}(failed)${CL}"
-    fi
-  fi
-  return "$rc"
-}
-
 aw_install() {
   AW_TMP="$(mktemp -d)"
   chmod 700 "$AW_TMP"
@@ -1011,12 +919,12 @@ aw_install() {
 
   AW_LOG="/tmp/anyworld-install-${CTID}.log"
   local rc=0
-  echo -e "\n${INFO}${BOLD}${DGN}Installing AnyWorld in CT ${CTID} (typically 3-10 minutes)${CL}"
-  echo -e "${TAB}${DGN}Full log: ${AW_LOG}  (watch it from another shell: tail -f ${AW_LOG})${CL}"
   if [[ "${VERBOSE:-no}" == "yes" ]]; then
+    echo -e "${INFO}${YW} Installing AnyWorld in CT ${CTID}...${CL}"
     pct exec "$CTID" -- bash /root/aw-install.sh 2>&1 | tee "$AW_LOG" || rc=$?
   else
-    aw_run_with_progress "$AW_LOG" pct exec "$CTID" -- bash /root/aw-install.sh || rc=$?
+    msg_info "Installing AnyWorld in CT ${CTID} (this can take several minutes)"
+    pct exec "$CTID" -- bash /root/aw-install.sh >"$AW_LOG" 2>&1 || rc=$?
   fi
 
   if [[ "$rc" -ne 0 ]]; then
